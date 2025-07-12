@@ -25,7 +25,7 @@ obs_diff_prop1 <- cancer_exp %>%
   specify(progressed ~ risk_site, success = "Yes") %>%
   calculate(stat = "diff in props", order = c("Low", "High"))
 
-set.seed(1234)
+set.seed(4567)
 rs_null_distribution <- cancer_exp %>%
   specify(progressed ~ risk_site, success = "Yes") %>%
   hypothesize(null = "independence") %>%
@@ -37,3 +37,4 @@ p_value1 <- rs_null_distribution %>%
 
 percentile_ci_1 <- rs_null_distribution %>%
   get_confidence_interval(level = 0.95, type = "percentile")
+  # Risks for other demo were computed based on the same step above
