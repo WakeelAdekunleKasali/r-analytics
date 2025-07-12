@@ -1,8 +1,5 @@
 
 # Load required packages
-library(dplyr)
-library(ggplot2)
-library(ggpubr)
 
 # Function to assign timepoint intervals
 assign_timepoints <- function(df) {
