@@ -1,0 +1,4174 @@
+---
+title: "Differentiating Progressors and Non-Progressors in OPMDs: A Statistical Approach to understanding progression outcome"
+number-sections: true
+format: pdf
+crossref:
+  fig-title: '**Figure**'
+  title-delim: "**.**"
+tables: true
+graphics: yes
+output:
+  pdf_document:
+    latex_engine: xelatex
+    template: custom_template.tex
+
+execute: 
+  echo: false
+---
+
+```{r}
+#| include: false
+
+  # install.packages("readxl")
+  # install.packages("xlsx")
+  # install.packages("gmodels")
+  # install.packages("Hmisc")
+  # install.packages("ggplot2")
+  # install.packages("exactRankTests") # Permutation t-test
+  # install.packages("naniar")
+  # install.packages("UpSetR")
+  # install.packages("car")
+  # install.packages("ggpubr")
+  # install.packages("latticeExtra")
+ 
+```
+
+```{r}
+#| include: false
+
+library(tidyverse)
+library(gmodels)
+library(readxl)
+library(writexl)
+library(ggplot2)
+library(patchwork)
+library(exactRankTests)
+library(naniar)
+library(UpSetR)
+library(car)
+library(ggpubr)
+library(kableExtra)
+library(infer)
+library(patchwork)
+library(brolgar)
+library(infer)
+library(car)
+library(gtsummary)
+library(gt)
+library(gridExtra)
+library(scico)
+library(ggthemes)
+library(cardx)
+library(ggpval)
+library(nlme)
+library(pROC)
+library(randomForest)
+library(splines)
+library(lmeSplines)
+library(ISLR)
+library(tibble)
+library(caret)
+library(modeest)
+library(mice)
+library(caTools)
+library(pROC)
+library(cowplot)
+library(ROCR)
+library(epitools)
+```
+
+<!--
+Reading data on R
+-->
+
+```{r}
+#| include: false
+
+orig_data <- read_excel("../Data/New_Dataset.xlsx") 
+cancer <- read_excel("../Data/New_Dataset.xlsx", 
+                     sheet = "cancer(cleaned)")
+cancer.id <- read_excel("../Data/New_Dataset.xlsx", 
+                        sheet = "cancer.id")
+```
+
+```{r}
+#| include: false
+# show the dataset
+
+head(orig_data) # original dataset
+head(cancer) # cleaned dataset
+```
+
+# Introduction
+
+Oral Potentially Malignant Disorder (OPMD) is any abnormality in the mouth lining tissue that is associated with a risk of developing oral cancer. This condition poses a severe health threat stemming from its ability to translate into long-term complications in oral tissues. Clinicians assess cancer risk in patients with OPMDs through a clinical examination, measurable substances such as cells in the oral cavity that provide information about OPMD, taking a sample of such substance and review, or a combination of those approaches. In a clinical follow-up, observable differences in tissue characteristics that indicate whether an OPMD is progressing are monitored.
+
+As scientific knowledge advances, experts attempt to identify how natural mechanisms inside the body are linked with this OPMD progression to cancer. However, making inferences based solely on qualitative assessments might not be enough to validate these biological links without empirical data and statistical rigour. Drawing on dental data collected from a longitudinal oral health study made available by BC Cancer Research Center, we aim to assess the lesion growth trajectories between progressors and non-progressors. The primary research question explores which patient characteristics and lesion growth trajectories predict OPMD progression to oral cancer and how progressors compare to non-progressors.
+
+The statistical questions of interest concern :
+
+1.  Do the progressors contrast non-progressors with covariate adjustments at specific time points?
+
+2.  Will the time-rate at which covariates change with lesion area varies between progressors and non-progressors?
+
+
+The rest of this project is structured as follows: Section 2 briefly describes the dataset and presents exploratory data analysis (EDA). Section 3 and 4 include a literature review and a discussion of missing values. Section 5 applies formal analysis methods, and Section 6 and 7 summarize the findings and give conclusion.
+
+# Exploratory Data Analysis
+
+The retrospective longitudinal cohort study focuses on evaluating the transformation of OPMDs to cancer by analyzing lesion trajectories in patients who progressed and those who did not. The dataset comprises repeated measures of lesion area and OPMD diagnosis associated with each visit, alongside patient-specific characteristics and the time-to-event or censoring time. Lesion area is a time-dependent covariate measured on a ratio scale, patient group is dichotomous, and time point varies numerically across patients based on the number of visits recorded.
+
+A combination of data visualization and statistical testing would serve as the initial steps in addressing the two statistical questions. Clinically, oral lesion-area measurement reflects the surface size of any abnormal tissue within the oral cavity. In this cohort study, patients with OPMDs were followed up, with the lesion area measured and a biopsy conducted for diagnosis. Individuals diagnosed with "severe dysplasia", "verrucous carcinoma", or "squamous cell carcinoma" are categorized as progressors, while those without such a diagnosis by censoring time are identified as non progressors.
+
+<!-- 
+### ADJUSTING THE DATA ###
+I have to adjust the dataset such that the lesion areas in the original datasets that are 0, but are changed to 1 in the cleaned datasets are returned to 0
+-->
+
+```{r}
+#| include: false
+
+# Update "Lesion_area" values based on "StudyID" and "Timepoint"
+cancer$Lesion_area[cancer$StudyID == 2094 & 
+                     cancer$Timepoints == 25] <- 0
+cancer$Lesion_area[cancer$StudyID == 3003 &
+                     cancer$Timepoints == 122] <- 0
+cancer$Lesion_area[cancer$StudyID == 3011 & 
+                     cancer$Timepoints == 28] <- 0
+
+# Save the updated dataset into a new object
+Upd_cancer <- cancer
+```
+
+<!--
+# REMOVING MISSING VALUES FOR SPAGHETTI PLOTS
+To make spaghetti plot, I will need to remove missing values
+-->
+
+```{r}
+#| include: FALSE
+
+# remove only the rows that have NA in the Lesion_area
+Upd_cancer_spg <- Upd_cancer[!is.na(cancer$Lesion_area),]
+```
+
+
+<!--
+FEATURE ENGINEERING
+-->
+<!--
+## CREATING A NEW VARIABLE
+-->
+
+```{r}
+#| include: false
+
+# Create a new variable "missing_indicator"
+cancer_mis <- Upd_cancer %>%
+  mutate(missing_indicator = 
+           ifelse(rowSums(
+    !is.na(dplyr::select(.,
+   Bxdiagnosis:'Proliferation Rate'))) == 0, 1, 0))
+```
+
+```{r}
+#| include: false
+
+# Create the new variable by filling forward within each StudyID
+cancer_dia <- cancer_mis %>%
+  group_by(StudyID) %>%
+  mutate(diagnosis = Bxdiagnosis) %>%
+  fill(diagnosis, .direction = "down") %>%
+  ungroup()
+```
+
+
+```{r}
+#| include: false
+
+# Creating new variables by adjusting old ones
+cancer_check <- Upd_cancer %>%
+  group_by(StudyID) %>%
+  mutate(
+    real_age = 
+      if_else(Timepoints == 0, Age, Age + Time),
+    Sex = 
+      if_else(Timepoints == 0,
+            `SEX 1=M, 2=F`, NA),
+    Ethnicity = 
+      if_else(Timepoints == 0, 
+            `Ethnicity 1=White, 2=others`, NA),
+    lesion_risk_site = 
+      if_else(Timepoints == 0,
+              `Lesion Risk Site`, NA),
+    Ever_smoker = 
+      if_else(Timepoints == 0,
+              `Ever smoker`, NA),
+    Ever_alcohol = 
+      if_else(Timepoints == 0,
+              `Ever Alcohol`, NA),
+    OtherLesPrs = 
+      if_else(Timepoints == 0,
+              `Other D Lesion present`, NA)
+  ) %>%
+  fill(real_age, Sex, Ethnicity,
+       lesion_risk_site, Ever_smoker, Ever_alcohol, 
+       OtherLesPrs, .direction = "downup") %>%
+  ungroup()
+```
+
+```{r}
+#| include: false
+
+# Create the new variable 'diagnosis_retest' and adjusting others
+cancer_dia <- cancer_mis %>%
+  group_by(StudyID) %>%
+  mutate(diagnosis = Bxdiagnosis) %>%
+  fill(diagnosis, .direction = "down") %>%
+  mutate(diagnosis_retest =
+           ifelse(is.na(diagnosis), NA, 
+               ifelse(is.na(Bxdiagnosis), 0, 1))) %>%
+  dplyr::select(Timepoints, StudyID, Type,
+                Lesion_area, Bxdiagnosis, diagnosis, 
+         diagnosis_retest, Age, missing_indicator) %>%
+  ungroup()
+```
+
+```{r}
+#| include: false
+
+## Merge dataset
+new_output <- full_join(cancer_check, cancer_dia)
+```
+
+```{r}
+#| include: false
+
+# Rearrange the position of some variables in a data frame
+prj_data <- new_output %>%
+  relocate(
+    diagnosis, .after = Bxdiagnosis) %>% 
+  relocate(
+    diagnosis_retest, .after = diagnosis) %>% 
+  relocate(
+    lesion_risk_site, .after = `Lesion Risk Site`) %>%
+  relocate(
+    real_age, .after = Age) %>%
+  relocate(
+    Sex, .after = `SEX 1=M, 2=F`) %>%
+  relocate(
+    Ethnicity, .after = `Ethnicity 1=White, 2=others`) %>%
+  relocate(
+    Ever_smoker, .after = `Ever smoker`) %>%
+  relocate(
+    Ever_alcohol, .after = `Ever Alcohol`) %>%
+  relocate(
+    OtherLesPrs, .after = `Other D Lesion present`) %>%
+  relocate(
+    missing_indicator, .after = OtherLesPrs)
+```
+
+
+```{r}
+spag_Gender <- prj_data[!is.na(cancer$Lesion_area),]
+```
+
+<!--
+## ALL PATIENTS, BOTH PROG & NON PROG ##
+FIGURE 1A - 
+-->
+
+```{r}
+#| warning: false
+#| include: false
+
+overall_data <- spag_Gender %>% 
+dplyr::select(StudyID, Timepoints, Lesion_area, Type)
+
+# Calculate medians 
+medians_overall_data <- overall_data %>%
+  dplyr::summarize(mLesion_area = 
+                     median(Lesion_area, na.rm = TRUE))
+
+# Extract the median value for annotation
+median_value <- medians_overall_data$mLesion_area
+
+# make plot
+ p1 <- ggplot(overall_data, aes(Timepoints, 
+                                Lesion_area, group=StudyID)) + 
+  geom_point(size = 0.7) +
+  geom_line(color = "grey", alpha = 1.2) +
+  theme(legend.position = "none") +
+  geom_hline(data = medians_overall_data, 
+             aes(yintercept = mLesion_area),
+             linetype = "dotted", color = "black") +
+  labs(x = expression("time point (months)"),
+       y = expression ("Lesion area in"~(mm)^2)) +
+  ggtitle('A') +
+  theme_bw()  +
+annotate("text", x = 0, y = median_value, 
+           label = round(median_value, 3), vjust = -1,
+color = "blue", angle = 45) +
+   scale_y_continuous(breaks = c(0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000)) + scale_x_continuous(breaks = c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170))
+ 
+ p1 <- p1 + 
+   theme(axis.title = element_text(size = 12)) +
+   theme(axis.text = element_text(
+    color="black", 
+    size=11, 
+    face=3,
+  )
+  )
+```
+
+<!--
+## NON-PRGRESSORS ALONE ##
+FIGURE 1B-->
+
+```{r}
+#| warning: false
+#| include: false
+
+# Filter data for Non Progressors
+nprogressor_data <- spag_Gender %>% 
+  filter(Type == "Non-Progressors") %>% 
+  dplyr::select(StudyID, Timepoints, 
+                Lesion_area, Type, Sex)
+
+# Calculate medians for Non-Progressors
+median_value_np <- nprogressor_data %>%
+  dplyr::summarize(median_Lesion_area = 
+                     median(Lesion_area, 
+                            na.rm = TRUE)) %>%
+  pull(median_Lesion_area)
+
+# # Timepoints of interest for error bar
+# timepoints_of_interest <- c(0, 8, 12, 20, 
+#                             36, 43, 60, 92, 105)
+
+# Calculate mean and std error for the specified time points
+# summary_data <- nprogressor_data %>%
+#   filter(Timepoints %in% timepoints_of_interest) %>%
+#   dplyr::group_by(Timepoints) %>%
+#   dplyr::summarize(
+#     mean_Lesion_area = mean(Lesion_area, 
+#                             na.rm = TRUE),
+#     se_Lesion_area = sd(Lesion_area, 
+#                         na.rm = TRUE)/sqrt(n())
+#   )
+
+p2 <- ggplot(nprogressor_data, aes(Timepoints,
+                                   Lesion_area,
+                                   group=StudyID, col = Sex)) + 
+  geom_point(size = 0.7) +
+  geom_line() +
+  geom_hline(aes(yintercept = median_value_np), 
+             linetype = "dotted", color = "black") +
+  annotate("text", x = 0, y = median_value_np, 
+           label = round(median_value_np, 3), 
+           vjust = -1, 
+           color = "blue", angle = 45) +
+  # geom_point(data = summary_data, aes(x = Timepoints,
+  #                                     y = mean_Lesion_area), 
+  #            size = 2, color = "violet", 
+  #            inherit.aes = FALSE) +
+  # geom_errorbar(data = summary_data, aes(x = Timepoints, 
+  #                                        y = mean_Lesion_area, 
+  #                                        ymin = 
+  #                                       mean_Lesion_area - 
+  #                                         se_Lesion_area,
+  #                                        ymax = 
+  #                                       mean_Lesion_area +
+  #                                         se_Lesion_area),
+  #               width = 3, size = 0.8, 
+  #               color = "black", alpha = 10, 
+  #               inherit.aes = FALSE) +
+  # geom_line(data = summary_data, aes(x = 
+  #                                      Timepoints, 
+  #                                    y = mean_Lesion_area), 
+  #           color = "black", alpha = 10, 
+  #           inherit.aes = FALSE) +
+  labs(x = expression("time point (months)"),
+       y = expression ("Lesion area in"~mm^2)) +
+  ggtitle('B') +
+  theme_bw()
+
+p2 <- p2 + scale_y_continuous(breaks = c(0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000)) + scale_x_continuous(breaks = c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170)) + 
+  theme(legend.position = c(0.92, 0.87), 
+        legend.background = element_rect(color = "black"),
+        axis.title = element_text(size = 12)) +
+   theme(axis.text = element_text(
+    color="black", 
+    size=11, 
+    face=3,
+  )
+  )
+```
+
+<!--
+# PROGRESSORS ALONE
+FIGURE 1C
+-->
+
+```{r}
+#| warning: false
+#| include: false
+
+# Filter data for Progressors
+progressor_data <- spag_Gender %>% 
+  filter(Type == "Progressors") %>% 
+  dplyr::select(StudyID, Timepoints, 
+                Lesion_area, Type, Sex)
+
+# Calculate medians for Progressors
+median_value_p <- progressor_data %>%
+  dplyr::summarize(median_Lesion_area = 
+                     median(Lesion_area, 
+                            na.rm = TRUE)) %>%
+  pull(median_Lesion_area)
+
+# # Timepoints of interest for error bar
+# timepoints_of_interest <- c(0, 11, 14, 35, 29, 
+#                             14, 42, 60, 93, 60, 119)
+
+# Calculate mean and std error for the specified time points
+# summary_data <- progressor_data %>%
+#   filter(Timepoints %in% timepoints_of_interest) %>%
+#   dplyr::group_by(Timepoints) %>%
+#   dplyr::summarize(
+#     mean_Lesion_area = mean(Lesion_area,
+#                             na.rm = TRUE),
+#     se_Lesion_area = sd(Lesion_area, 
+#                         na.rm = TRUE)/sqrt(n())
+#   )
+
+p3 <- ggplot(progressor_data, aes(Timepoints, 
+                                  Lesion_area,
+                                  group=StudyID, col = Sex)) + 
+  geom_point(size = 0.7) +
+  geom_line() +
+  ylim(0, 2000) +  
+  geom_hline(aes(yintercept = median_value_p),
+             linetype = "dotted", color = "black") +
+  annotate("text", x = 0, y = median_value_p, 
+           label = round(median_value_p, 3), vjust = -1, 
+           color = "blue", angle = 45) +
+  # geom_point(data = summary_data, aes(x = Timepoints,
+  #                                     y = mean_Lesion_area), 
+  #            size = 2, color = "violet",
+  #            inherit.aes = FALSE) +
+  # geom_errorbar(data = summary_data, 
+  #               aes(x = Timepoints, 
+  #                   y = mean_Lesion_area, 
+  #            ymin = mean_Lesion_area - se_Lesion_area,
+  #            ymax = mean_Lesion_area + se_Lesion_area),
+  #               width = 3, size = 0.8, color = "black",
+  #            alpha = 10, inherit.aes = FALSE) +
+  # geom_line(data = summary_data, 
+  #           aes(x = Timepoints, y = mean_Lesion_area), 
+  #           color = "black", 
+  #           alpha = 10, inherit.aes = FALSE) +
+  # labs(x = expression("time point (months)"),
+  #      y = expression ("Lesion area in"~ mm^2)) +
+  ggtitle('C') +
+  theme_bw() 
+
+p3 <- p3 + scale_y_continuous(breaks = c(0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000)) + scale_x_continuous(breaks = c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170)) +
+  theme(legend.position = c(0.92, 0.87), # Adjust legend position (x, y) in normalized coordinates
+        legend.background = element_rect(color = "black"),
+        axis.title = element_text(size = 12)) +
+   theme(axis.text = element_text(
+    color="black", 
+    size=11, 
+    face=3
+  )
+  )
+```
+
+
+<!--
+## SPAGHETTI PLOT FOR THE ALL PATIENTS,
+NON PROGRESSOR $ PROGRESSORS ##
+-->
+
+```{r,fig.width=20,fig.height=6}
+#| warning: false
+#| label: fig-line-plot1
+#| fig-align: center
+#| fig-cap: >-
+#|  Spaghetti plots show lesion area profiles (mm²) over time point:
+#|  Panel A shows overall trends, Panel B covers non-progressors, 
+#|  and Panel C highlights progressors. Gray lines
+#|  for individual trajectories,before distinguishing lesion area trajectories
+#|  by sex. Black dotted horizontal lines mark median (lesion area) throughout the follow-up period.  
+
+y_limits <- c(0, 3000)  
+
+# Plot 1
+p1 <- p1 + coord_cartesian(ylim = y_limits)
+
+# Plot 2
+p2 <- p2 + coord_cartesian(ylim = y_limits)
+
+# Plot 3
+p3 <- p3 + coord_cartesian(ylim = y_limits)
+
+p1 + p2 + p3
+```
+
+Crucially, the dataset includes a time-counting variable that tracks 39 patients with uneven but repeated visit time points. The patients' recorded lesion areas are presented in @fig-line-plot1 with spaghetti plots. The plot reveal that the lesion areas measured for overall patients are centered around 300 mm². Lesion areas for non-progressors ranged from 0 to 2592 mm², centered at 288 mm², whereas progressors had lesion areas ranging from 30 to 1800 mm², with a centre around 344 mm².
+
+
+
+
+<!--
+## MINIMUM $ MAXIMUM LESION AREA FOR THE GROUPS ##
+Calculated the minimum and maximum lesion area for the
+progressors and non-progressors
+-->
+
+
+```{r}
+#| include: false
+
+medians_value_np <- nprogressor_data %>%
+  dplyr::summarize(
+    min_Lesion_area = min(Lesion_area, na.rm = TRUE),
+    max_Lesion_area = max(Lesion_area, na.rm = TRUE),
+    mLesion_area = median(Lesion_area, na.rm = TRUE)
+  )
+
+medians_value_p <- progressor_data %>%
+  dplyr::summarize(
+    min_Lesion_area = min(Lesion_area, na.rm = TRUE),
+    max_Lesion_area = max(Lesion_area, na.rm = TRUE),
+    mLesion_area = median(Lesion_area, na.rm = TRUE)
+  )
+```
+
+Whether the average lesion area trend for progressors or non-progressors reflects a typical trajectory remains unclear in this case. In the early time points both non progressors and progressors lesion area seem relatively stable, although, the lesion area of the progessors accelerates at later time points. In panel B, the within-individual variability indicated by trajectories that rise and fall is partially noticed in patients with above-median initial lesion areas. While in Panel C, males are more likely to exceed the median lesion threshold with some trajectories exhibiting sharp increases over time. Meanwhile, a higher central tendency (median) of lesion size in progressors could be a pointer to a possible malignancy of lesion in that group.
+
+Among the 39 cohorts involved in the study, 13, or one-third, developed oral cancer, but the remaining two-third did not. In the interval, we would examine how cancer progression might be associated with patient-specific factors, particularly the clinical and lifestyle factors observed in this study. We compare two populations: patients with a specific characteristic, such as smoking history, alcohol consumption history, or co-existing dysplasia, and those without, to determine whether these characteristics are associated with cancer progression.
+
+
+<!--
+DATA RE-ALIGNING - Some patients need to have their observations re-aligned
+based on the time points.
+-->
+
+```{r}
+# Create the Time_point variable
+
+prj_data_new <- prj_data %>%
+  mutate(Time_point = case_when(
+    StudyID == 1552 ~ Timepoints - 12,
+    StudyID == 1302 ~ Timepoints - 3,
+    TRUE ~ Timepoints
+  ))
+```
+
+```{r}
+# Place the "Time_point" variable beside "Timepoints"
+
+prj_data_new <- prj_data_new %>%
+  relocate(
+    Time_point, .after = Timepoints) 
+```
+
+<!--
+Now I need to remove the rows with "Timepoints" having negative sign. 
+-->
+
+```{r}
+# Remove the specified rows
+prj_data_new_al <- prj_data_new %>%
+  filter(!(StudyID == 1302 &
+             Timepoints == 0)) %>%
+  filter(!(StudyID == 1552 &
+             (Timepoints == 0 | Timepoints == 2)))
+
+```
+
+<!-- 
+FOR TEST OF DIFFERENCE IN PROPORTION, THE FOLLOWING CODES WERE RUN TO ACHIEVE RESULTS
+-->
+<!-- 
+Exploratory data analysis - I will be using the dataset in cancer.id
+-->
+
+```{r}
+#| include: false
+
+cancer.id <- read_excel("../Data/New_Dataset.xlsx",
+                        sheet = "cancer.id") 
+
+## rename the data
+cancer_exp <- cancer.id
+```
+
+<!--
+I will use `recode_factor()` function from dplyr function to modify 
+the categorical variables with numbers into names
+-->
+<!--
+## RECODING THE BINARY VARIABLES
+-->
+
+```{r}
+#| include: false
+
+cancer_exp <- cancer_exp %>%
+  mutate(
+    progressed = 
+      recode_factor(Progression, `1` = "Yes", `0` = "No"),
+    risk_site = 
+      recode_factor(`Lesion risk site`, `1` = "High", `0` = "Low"),
+    smoking = recode_factor(Smoke, `1` = "Yes", `0` = "No"),
+    alcohol = 
+      recode_factor(Alcohol, `1` = "Yes", `0` = "No"),
+    oth_ls = 
+      recode_factor(`Other D Lesion present`, `1` = "Yes", `0` = "No"),
+    gender =
+      recode_factor(Gender, `1` = "Yes", `0` = "No")
+  )
+```
+
+```{r}
+#| include: false
+
+# Creating a frequency table for each variable and merging them back to the original dataframe
+freq_data <- cancer_exp %>%
+  group_by(progressed, risk_site, smoking) %>%
+  dplyr::summarise(Frequency = n(),
+                   .groups = 'drop')
+
+# Merging frequency data back to the original data frame
+cancer_exp <- cancer_exp %>%
+  left_join(freq_data, by = c("progressed",
+                              "risk_site", "smoking"))
+```
+
+```{r}
+#| include: false
+
+data1 <- matrix(c(2, 2, 24, 11), 2,2, byrow=TRUE)
+
+# Assign column and row names
+dimnames(data1) <- list("X" = c("Low", "High"), "Y" = c("Non Progressor","Progressor"))
+
+RR <- riskratio(data1, method="wald")
+OR <- oddsratio(data1, method="wald")
+
+
+OddsRatio <- OR$measure
+OddsRatio <- round(OddsRatio, 2)
+OddsRatioSite <- OddsRatio[2, 1]
+```
+
+<!-- 
+HYPOTHESIS TESTING
+
+
+### LESION RISK SITE
+ 
+
+Let:
+\( p_1 \) be the proportion of OPML's patients in high-risk site (`risk_site=High`) that subsequently experienced OPML's progression to cancer 
+
+\( p_2 \) be the proportion of OPML's patients in low-risky site (`risk_site=Low`) and subsequently experienced OPML's progression to cancer.
+  
+We want to test
+
+\[ H_0: p_1 = p_2 \]
+
+and
+
+\[ H_a: p_1 \ne p_2 \]
+
+We would calculate the observed test statistic \( \hat{p}_1 - \hat{p}_2 \) using `risk_site` by first specifying the response and explanatory variables.
+-->
+
+```{r}
+#| include: false
+
+obs_diff_prop1 <- 
+  cancer_exp %>% 
+  specify(formula = progressed ~ risk_site,
+          success = "Yes") %>%
+  calculate(stat = "diff in props",
+            order = c("Low", "High"))
+obs_diff_prop1 <- round(obs_diff_prop1, 3)
+```
+
+<!-- 
+So the observed value is `r obs_diff_prop1` hence we can generate 1000 samples from the null distribution using `risk_site` assuming the null hypothesis is true.
+-->
+
+```{r}
+#| include: false
+
+set.seed(1234)
+
+rs_null_distribution <- cancer_exp %>%
+  specify(formula = progressed ~ risk_site, success = "Yes") %>%
+  hypothesize(null="independence") %>%
+  generate(reps = 1000, type = "permute") %>%
+  calculate(stat = "diff in props", order = c("Low", "High"))
+
+head(rs_null_distribution)
+```
+
+<!-- 
+Hence the p-value is obtained as follows:
+-->
+
+```{r}
+set.seed(1234)
+#| include: false
+
+p_value1 <-
+    rs_null_distribution %>% 
+    get_p_value(obs_stat = obs_diff_prop1,
+                direction = "both")
+```
+
+<!-- 
+With p value of `r p_value1` greater than 0.05, there is no enough evidence to reject Ho. Hence we say that there is no sufficient evidence to suggest that progression to cancer is associated to the riskiness in the patients OPML site.
+-->
+
+
+```{r}
+#| include: false
+
+# 95% confidence interval
+percentile_ci_1 <- rs_null_distribution %>% 
+  get_confidence_interval(level = 0.95,
+                          type = "percentile")
+```
+
+A number of relevant factors to the study are summarized in @tbl-outEDA2. Oral lesions may develop anywhere within the oral cavity. Lips, tongue, and palate are typical, although the floor of the mouth has the highest tendency. In this study, progression was recorded in 31.4% of patients having high risk lesion site (11 out of 35) compared to 50.0% progression observed in those with low risk lesion site (2 out of 4).  In this instance, the odds of developing cancer are interestingly `r OddsRatioSite` times lower for patients with high-risk lesion site  compared to those with low-risk lesion site. Although, the 95% confidence interval (CI: 0.06, 3.69) implies notable uncertainty around this estimate. Given the considerable variability reflected in the odds ratio confidence interval, which might be due to a low-risk lesion site having a small count, a `r obs_diff_prop1` difference in proportion with a permutation-based 95% confidence interval (CI: -0.37, 0.46), was constructed to accommodate such a data structure. 
+
+
+<!--
+Let pi_1 be the probability of positive response in group 1, 
+
+Pi_2 be the probability of positive response in group 2 
+
+With the odds ratio of `r OddsRatioSite` which is lesser than 1 indicates that the condition is less likely to occur in the group of patients with the high risk sites. There is a `r p_value1` chance of observing a proportion difference of `r obs_diff_prop1` or higher if the null hypothesis *proportion of OPML's patients in high-risk site that subsequently experienced OPML's progression to cancer* is the same as *proportion of OPML's patients in low-risk site that subsequently experienced OPML's progression to cancer* is true.
+-->
+<!--
+The contingency table of lesion risk site
+-->
+
+```{r}
+#| include: false
+#| label: tbl-out1
+#| tbl-cap: The contingency table of lesion risk site
+
+cross_table <- cancer_exp %>%
+  tbl_cross(
+    row = progressed, 
+    col = risk_site 
+  )
+```
+
+<!--
+TRYING TO HAVE A COMPREHENSIVE TABLE THAT WILL 
+COMPARE EACH FACTOR WITH PROGRESSOR $ NON PROG.
+-->
+
+```{r}
+#| include: false
+
+cancer_EDA <- cancer_exp %>% 
+  dplyr::select(StudyID, progressed, risk_site,
+                oth_ls, smoking, alcohol, gender)
+
+# Renaming of some variables for tabulation purpose
+
+cancer_expEDA <- cancer_EDA %>%
+  dplyr::rename(
+    `Malignant transformation` = 
+      progressed,
+    `Lesion risk site` = 
+      risk_site,
+    `Diff dsyplasia` =
+      oth_ls,
+    Smoking = 
+      smoking,
+    Alcohol = 
+      alcohol,
+    Gender = 
+      gender
+  ) %>% 
+  mutate(
+    `Malignant transformation` = 
+      recode_factor(`Malignant transformation`, 
+                  "Yes" = "Yes", "No" = "No"),
+    Smoking = 
+      recode_factor(Smoking, "Yes" = "Yes", "No" = "No"),
+    Alcohol =
+      recode_factor(Alcohol, "Yes" = "Yes", "No" = "No")
+# I later didn't use some of the renamings
+  )   
+```
+
+<!--
+WITH gtsummary(), I OBTAINED FREQUENCY FOR EACH FOR THE 
+CELL OF EACH 2 BY 2 TABLE
+-->
+
+```{r}
+#| include: false
+
+ccancer_expEDA <- cancer_expEDA %>%
+  mutate(`Malignant transformation` =
+           fct_relevel(`Malignant transformation`, "Yes", "No"))
+
+# Generate the summary table with reordered levels
+cancer_expEDA %>%
+  dplyr::select(`Malignant transformation`,
+                `Lesion risk site`, Smoking, Alcohol,
+         `Diff dsyplasia`, Gender) %>%
+  tbl_summary(by = `Malignant transformation`,
+              missing =  "no",
+              type = all_dichotomous() ~ "categorical") %>%
+  modify_header(label = "**Factors**") %>%
+  bold_labels()
+```
+
+
+
+\newpage
+
+<!--
+MANUALLY CREATED A TABLE WITH kable()
+BASED ON SOME RESULTS IN gtsummary()
+-->
+
+```{r}
+#| warning: false
+#| label: tbl-outEDA2
+#| tbl-cap: Data from the study- The factors related to progression of OPMDs  to oral cancer (n = 39)  
+
+EDA2 <- data.frame(
+  Factors = c("Lesion risk site", "High", "Low", "", 
+              "Smoking", "Yes", "No", "", 
+              "Alcohol", "Yes", "No", "", 
+              "Other dysplasia present", "Yes", "No", "",
+              "Gender", "Male", "Female"),
+  `Non Progressors` = c("", "24 (68.6%)", "2 (50%)", "", 
+         "", "15 (65.2%)", "11 (68.8%)", "", 
+         "", "19 (67.9%)", "7 (63.6%)", "", 
+         "", "2 (40%)", "24 (70.6%)", "",
+         "", "16 (69.6%)", "10 (62.5%)"),
+  Progressors = c("", "11 (31.4%)", "2 (50%)", "", 
+          "", "8 (34.8%)", "5 (31.2%)", "", 
+          "", "9 (32.1%)", "4 (36.4%)", "", 
+          "", "3 (60%)", "10 (29.4%)", "",
+          "", "7 (30.4%)", "6 (37.5%)"),
+  check.names = FALSE
+)
+
+# Dynamically calculate the row indices for the main categories and group ends
+main_categories <- c(1, 5, 9, 13, 17) # Rows with main categories
+group_ends <- c(4, 8, 12, 16, 20)     # Rows where groups end
+
+# Adjust the indices to match the actual number of rows in EDA2
+main_categories <- main_categories[main_categories <= nrow(EDA2)]
+group_ends <- group_ends[group_ends <= nrow(EDA2)]
+
+kable(EDA2, booktabs = TRUE,
+                escape = FALSE,
+      align = c("c", "c", "c")) %>%
+  kable_styling(latex_options = 
+                  c("hold_position", "striped")) %>%
+  row_spec(main_categories, bold = TRUE, hline_after = TRUE) %>% 
+  row_spec(group_ends, hline_after = TRUE) %>%                  
+  row_spec(2:nrow(EDA2), extra_css = "padding: 0px;") %>%       
+  kable_styling(full_width = FALSE, font_size = 7)
+```
+
+<!--
+### SMOKING
+-->
+
+```{r}
+#| include: false
+
+pi_1 = 8/23
+pi_2 = 5/16
+
+# Calculate the risk difference
+
+rd = pi_1 - pi_2
+
+# Calculate the Odd ratio
+
+or2 = pi_1* (1-pi_1)/pi_2*(1-pi_2)
+
+or2 = round(or2, 2)
+```
+
+
+```{r}
+#| include: false
+#| label: tbl-out2
+#| tbl-cap: >-
+#|  The contingency table for the relationship between
+#|   patient type and smoking history  
+cross_table <- cancer_exp %>%
+  tbl_cross(
+    row = progressed, 
+    col = smoking 
+  )
+```
+
+<!-- 
+## Progression and smoking.
+-->
+
+```{r}
+#| include: false
+
+tbl_data2 <- cancer_exp %>%
+    group_by(smoking, progressed) %>%
+    tally() %>%
+    spread(smoking, n)
+
+```
+
+<!--
+Let \( p_1 \) be the proportion of OPML's patients who have ever smoked (`smoking=Yes`) that subsequently experienced OPML's progression to cancer, and let \( p_2 \) be the proportion of OPML's patients who never smoked (`risk_site=Low`) and subsequently experienced OPML's progression to cancer.
+
+We want to test
+
+\[ H_0: p_1 = p_2 \]
+
+and
+
+\[ H_a: p_1 > p_2 \]
+
+We would calculate the observed test statistic \( \hat{p}_1 - \hat{p}_2 \) using `smoking` by first specifying the response and explanatory variables.
+-->
+
+```{r}
+#| include: false
+
+# Progressed vs smoking
+
+obs_diff_prop2 <- 
+  cancer_exp %>% 
+  specify(formula = progressed ~ smoking, success = "Yes") %>%
+  calculate(stat = "diff in props", order = c("Yes", "No"))
+obs_diff_prop2 <- round(obs_diff_prop2, 2)
+
+```
+
+<!--
+So the observed value is `r obs_diff_prop2` hence we can generate 1000 samples from the null distribution using `risk_site` assuming the null hypothesis is true.
+-->
+
+```{r}
+#| include: false
+
+set.seed(1234)
+
+
+sm_null_distribution <- cancer_exp %>%
+                    specify(formula = progressed ~ smoking, success = "Yes") %>%
+                    hypothesize(null="independence") %>%
+                    generate(reps = 1000, type = "permute") %>%
+                    calculate(stat = "diff in props", order = c("Yes", "No"))
+
+head(sm_null_distribution)
+```
+
+<!-- 
+hence the p-value is computed as follows:
+-->
+
+```{r}
+p_value2 <-
+    sm_null_distribution %>% 
+    get_p_value(obs_stat = obs_diff_prop2, direction = "right") 
+p_value2 <- p_value2 
+```
+
+<!--
+With p value of `r p_value2` greater than 0.05, hence there is no enough evidence to reject Ho. Hence we say that there is no evidence to suggest that progression to Cancer is related to the smoking history of the patient.
+-->
+
+```{r}
+#| include: false
+
+# 95% confidence interval
+
+percentile_ci_2 <- sm_null_distribution %>% 
+  get_confidence_interval(level = 0.95, 
+                          type = "percentile")
+```
+
+
+```{r}
+#| include: false
+
+data2 <- matrix(c(11, 5, 15, 8), 2,2, byrow=TRUE)
+
+# Assign column and row names
+dimnames(data2) <- list("X" = c("NeverSmoked", "EverSmoked"), "Y" = c("Non Progressor","Progressor"))
+
+RR <- riskratio(data2, method="wald")
+OR <- oddsratio(data2, method="wald")
+
+
+OddsRatioSmoking <- OR$measure
+OddsRatioSmoking <- round(OddsRatioSmoking, 2)
+OddsRatioSmoking <- OddsRatioSmoking[2, 1]
+```
+
+Alongside anatomical site, smoking history would also be considered. Smoking history is connected to the risk of malignant transformation from OPMDs to oral cancer, and this effect needs reaffirmation via statistical comparison of who is more at risk of getting cancer. @tbl-outEDA2 describes that, in our study, 34.8% (8 out of 23) of individuals who ever smoked progressed, compared to 31.2% (5 out of 16) of those who never smoked yet progressed. The odds of developing cancer are `r OddsRatioSmoking` times higher for those who ever smoked compared to those who never did. However, the `r obs_diff_prop2` (difference in proportions from the data) with a 95% confidence interval (CI: -0.283 to 0.247), suggests that the observed difference in proportions could be due to random variation.
+
+<!--
+To evaluate if the risk of progression from OPMD to OSSC might be lesser in non-smokers, we obtain a `r p_value2` chance of observing a proportion difference of `r obs_diff_prop2` or higher (which would be more likely) given the two independent proportions i.e *proportion of OPML's patients who have ever smoked and subsequently experienced OPML's progression to cancer* is the same as *proportion of OPML's patients who never smoked but subsequently experienced OPML's progression to cancer* is true.
+-->
+<!--
+### ALCOHOL
+-->
+
+```{r}
+pi_1 = 9/28
+pi_2 = 4/11
+
+# Calculate the risk difference
+
+rd = pi_1 - pi_2
+
+# Calculate the Odd ratio
+
+or3 = pi_1* (1-pi_1)/pi_2*(1-pi_2)
+
+or3 = round(or3, 2)
+```
+
+```{r}
+#| include: false
+#| label: tbl-out3
+#| tbl-cap: |
+#|  The contingency table for the relationship between 
+#|  patient type and alcohol history of the patient. 
+
+cross_table <- cancer_exp %>%
+  tbl_cross(
+    row = progressed, 
+    col = alcohol 
+  )
+```
+
+<!--
+Let \( p_1 \) be the proportion of OPML's patients who have ever drunk and subsequently experienced OPML's progression to cancer
+
+let \( p_2 \) be the proportion of OPML's patients who never drunk but subsequently experienced OPML's progression to cancer.
+
+We want to test
+
+\[ H_0: p_1 = p_2 \]
+
+
+and
+
+\[ H_a: p_1 > p_2 \]
+
+
+We would calculate the observed test statistic \( \hat{p}_1 - \hat{p}_2 \) using `alcohol` by first specifying the response and explanatory variables.
+who have other lesion
+-->
+
+```{r}
+#| include: false
+
+# Progressed vs alcohol history
+
+obs_diff_prop3 <- 
+  cancer_exp %>% 
+  specify(formula = progressed ~ alcohol, success = "Yes") %>%
+  calculate(stat = "diff in props", order = c("Yes", "No"))
+obs_diff_prop3 <- round(obs_diff_prop3, 2)
+```
+
+<!--
+So the observed value is `r obs_diff_prop3` hence we can generate 1000 samples from the null distribution using `risk_site` assuming the null hypothesis is true.
+-->
+
+```{r}
+#| include: false
+
+set.seed(3782)
+
+al_null_distribution <- 
+  cancer_exp %>%
+    specify(formula = progressed ~ alcohol, success = "Yes") %>%
+    hypothesize(null="independence") %>%
+    generate(reps = 1000, type = "permute") %>%
+    calculate(stat = "diff in props", order = c("Yes", "No"))
+
+head(al_null_distribution)
+```
+
+<!--
+hence the p-value is achieved as follows:
+-->
+
+```{r}
+#| include: false
+
+p_value3 <-
+    al_null_distribution %>% 
+    get_p_value(obs_stat = 
+                  obs_diff_prop3, 
+                direction = "right")
+p_value3 <- round(p_value3, 3)
+```
+
+```{r}
+#| include: false
+
+# 95% confidence interval
+percentile_ci_3 <- 
+  al_null_distribution %>% 
+  get_confidence_interval(level = 0.95,
+                          type = "percentile")
+```
+
+```{r}
+#| include: false
+
+data3 <- matrix(c(7, 4, 19, 9), 2,2, byrow=TRUE)
+
+# Assign column and row names
+dimnames(data3) <- list("X" = c("NeverSDrank", "EverDrank"), "Y" = c("Non Progressor","Progressor"))
+
+RR <- riskratio(data3, method="wald")
+OR <- oddsratio(data3, method="wald")
+
+
+OddsRatioAlcohol <- OR$measure
+OddsRatioAlcohol <- round(OddsRatioAlcohol, 2)
+OddsRatioAlcohol <- OddsRatioAlcohol[2, 1]
+```
+
+
+Habits like alcohol consumption can also influence oral cancer risk, because such habit may alter the natural state of the mouth to create an environment welcoming for harmful changes. Interestingly, the odds ratio `r OddsRatioAlcohol` in this study points to a lower risk of cancer progression among patients with an alcohol history compared to those without alcohol history. Like other factors, permutation method was used to construct the confidence interval for the difference in the two proportions. However, the observed difference in proportion (`r obs_diff_prop3`) and the 95% confidence interval (CI: -0.295 to 0.338) reflects the uncertainty in whether alcohol drinking history impact the progression to cancer based on the data. Among the 11 total people who never drink alcohol, (4 of them) 36.4% progressed, while (9 out of 19) 32.1% who drink, do progress.
+
+<!--
+With p value of `r p_value3` greater than 0.05, hence there is no enough evidence to reject Ho. We would say that there is no evidence to suggest that progression to Cancer is related to the drinking history of the patient.
+-->
+<!--
+We obtain a `r p_value3` chance of observing a proportion difference of `r obs_diff_prop3` or higher if indeed the two independent proportions i.e *proportion of OPML's patients who have ever drunk and subsequently experienced OPML's progression to cancer* is the same as *proportion of OPML's patients who never drunk but subsequently experienced OPML's progression to cancer* is true.
+-->
+<!--
+OTHER DYSPLASIA LESION PRESENT
+-->
+
+
+```{r}
+#| include: false
+#| label: tbl-out4
+#| tbl-cap: |
+#|  The contingency table for the relationship 
+#|  between patient type and other lesion present.  
+
+cross_table <- cancer_exp %>%
+  tbl_cross(
+    row = progressed, 
+    col = oth_ls 
+  )
+```
+
+<!-- 
+Progression and other lesion present
+-->
+<!--
+Let \( p_1 \) be the proportion of OPML's patients who have other lesion present (`oth_ls=Yes`) that subsequently experienced OPML's progression to cancer, and let \( p_2 \) be the proportion of OPML's patients who have no other lesion present (`oth_ls=No`) and subsequently experienced OPML's progression to cancer.
+
+We want to test
+
+\[ H_0: p_1 = p_2 \]
+
+and
+
+\[ H_a: p_1 \ne p_2 \]
+
+We would calculate the observed test statistic \( \hat{p}_1 - \hat{p}_2 \) using `oth_ls` by first specifying the response and explanatory variables.
+who have other lesion
+-->
+
+```{r}
+#| include: false
+
+# Progressed vs other lesion present
+
+obs_diff_prop4 <- 
+  cancer_exp %>% 
+  specify(formula = 
+            progressed ~ oth_ls, success = "Yes") %>%
+  calculate(stat = 
+              "diff in props", 
+            order = c("Yes", "No"))
+obs_diff_prop4 <- round(obs_diff_prop4, 2)
+```
+
+<!--
+So the observed value is `r obs_diff_prop4` hence we can generate 1000 samples from the null distribution using `risk_site` assuming the null hypothesis is true.
+-->
+
+```{r}
+#| include: false
+
+set.seed(3782)
+
+ot_null_distribution <- cancer_exp %>%
+    specify(formula = progressed ~ oth_ls, success = "Yes") %>%
+    hypothesize(null="independence") %>%
+    generate(reps = 1000, type = "permute") %>%
+    calculate(stat = "diff in props", order = c("Yes", "No"))
+
+head(ot_null_distribution)
+```
+
+<!--
+hence the p-value is achieved as follows:
+-->
+
+```{r}
+#| include: false
+
+p_value4 <-
+    ot_null_distribution %>% 
+    get_p_value(obs_stat = obs_diff_prop4, 
+                direction = "both")
+p_value4 <- round(p_value4, 3)
+```
+
+```{r}
+#| include: false
+
+# 95% confidence interval
+percentile_ci_4 <- ot_null_distribution %>% 
+  get_confidence_interval(level = 0.95,
+                          type = "percentile")
+```
+
+
+```{r}
+#| include: false
+
+data4 <- matrix(c(24, 10, 2, 3), 2,2, byrow=TRUE)
+
+# Assign column and row names
+dimnames(data4) <- list("X" = c("NoOther", "OtherDysplasis"), "Y" = c("Non Progressor","Progressor"))
+
+RR <- riskratio(data4, method="wald")
+OR <- oddsratio(data4, method="wald")
+
+
+OddsRatioDysplasia <- OR$measure
+OddsRatioDysplasia <- round(OddsRatioDysplasia, 2)
+OddsRatioDysplasia <- OddsRatioDysplasia[2, 1]
+```
+
+OPMD can manifest in different forms, including appearance like rough or thick patches, abnormal patch of white, gray, or red tissue in any of the gums, inside the cheek, on or under the tongue. The presence of one does not necessarily prevent others from co-occurring. In this study, among the cases of dysplastic lesions co-occurring, 60.0% (3 out of 5) progressed,  while 29.5% (10 out of 34) cases of no dysplastic lesions co-occurring progressed. The odds of developing cancer is `r OddsRatioDysplasia` times higher when other dysplasia is present compared to when it is not. A non-significant 95% confidence interval (CI: -0.382 to 0.535) was observed for the difference in proportions `r obs_diff_prop4` between OPMD patients with co-existing dysplasia and those without, who later progressed to cancer.
+
+<!--
+With p value of `r p_value4` greater than 0.05, hence there is no enough evidence to reject Ho. Hence we say that there is no evidence to suggest that progression to Cancer is related to other lesion present in patient.
+-->
+<!--
+There is a `r p_value4` chance of observing a proportion difference of `r obs_diff_prop4` or higher if indeed the two independent proportions i.e *proportion of OPML's patients who have other lesion present and subsequently experienced OPML's progression to cancer* is the same as *proportion of OPML's patients who do nont have other lesion present but subsequently experienced OPML's progression to cancer* is true.
+-->
+<!--
+GENDER
+-->
+
+
+```{r}
+#| include: false
+#| label: tbl-out5
+#| tbl-cap: |
+#|  The contingency table for the relationship
+#|   between patient type and their gender.  
+
+cross_table <- cancer_exp %>%
+  tbl_cross(
+    row = progressed, 
+    col = Gender 
+  )
+```
+
+<!--
+## Progression and Gender
+-->
+<!--
+Let \( p_1 \) be the proportion of OPML's patients who are Male that subsequently experienced OPML's progression to cancer, and let \( p_2 \) be the proportion of OPML's patients who are Female and subsequently experienced OPML's progression to cancer.
+
+We want to test
+
+\[ H_0: p_1 = p_2 \]
+
+and
+
+\[ H_a: p_1 \ne p_2 \]
+
+We would calculate the observed test statistic \( \hat{p}_1 - \hat{p}_2 \) using `Gender` by first specifying the response and explanatory variables.
+-->
+
+```{r}
+#| include: false
+
+# Progressed vs gender
+
+obs_diff_prop5 <- 
+  cancer_exp %>% 
+  specify(formula =
+            progressed ~ Gender,
+          success = "Yes") %>%
+  calculate(stat = "diff in props",
+            order = c("Male", "Female"))
+obs_diff_prop5 <- 
+  round(obs_diff_prop5, 2)
+```
+
+<!--
+So the observed value is `r obs_diff_prop5` hence we can generate 1000 samples from the null distribution using `risk_site` assuming the null hypothesis is true.
+-->
+
+```{r}
+#| include: false
+
+set.seed(1234)
+
+gd_null_distribution <- 
+  cancer_exp %>%
+    specify(formula = 
+              progressed ~ Gender, success = "Yes") %>%
+    hypothesize(null="independence") %>%
+    generate(reps = 1000, type = "permute") %>%
+    calculate(stat = 
+                "diff in props", order = c("Male", "Female"))
+
+
+head(gd_null_distribution)
+```
+
+
+
+<!--
+hence the p-value is achieved as follows:
+-->
+
+```{r}
+#| include: false
+
+p_value5 <-
+    gd_null_distribution %>% 
+    get_p_value(obs_stat =
+                  obs_diff_prop5, direction = "both")
+p_value5 <- round(p_value5, 3)
+```
+
+```{r}
+#| include: false
+
+# 95% confidence interval
+percentile_ci_5 <- gd_null_distribution %>% 
+  get_confidence_interval(level = 0.95,
+                          type = "percentile")
+```
+
+
+
+```{r}
+#| include: false
+
+data5 <- matrix(c(16, 7, 10, 6), 2,2, byrow=TRUE)
+
+# Assign column and row names
+dimnames(data5) <- list("X" = c("Male", "Female"), "Y" = c("Non Progressor","Progressor"))
+
+RR <- riskratio(data5, method="wald")
+OR <- oddsratio(data5, method="wald")
+
+
+OddsRatioGender <- OR$measure
+OddsRatioGender <- round(OddsRatioGender, 2)
+OddsRatioGender <- OddsRatioGender[2, 1] 
+```
+
+One gender might experience a higher incidence of OPMD progression to cancer, while the other gender remain not being heavily affected. The gender distribution in @tbl-outEDA2 shows 16 females and 23 males. 37.5% (6 of the 16) females progressed to cancer, and among male (7 out of 23) 30.4% progressed. The odds of developing cancer for female patients are `r OddsRatioGender` times higher than the odds for male patients. The difference in the proportion of male versus female OPMD patients who later progressed to cancer, with an observed statistic of `r obs_diff_prop5`, yielded an insignificant 95% confidence interval (CI: -0.283 to 0.247).
+
+<!--
+There is `r p_value5` chance of observing a proportion difference of `r obs_diff_prop5` or higher if indeed the two independent proportions i.e *proportion of OPML's patients who are male that subsequently experienced OPML's progression to cancer* is the same as *proportion of OPML's patients who are female that subsequently experienced OPML's progression to cancer* is true.
+-->
+<!--
+With p value of `r p_value5` greater than 0.05, hence there is no enough evidence to reject Ho. We'd say that there is no evidence to suggest that progression to Cancer is related to the Gender of patient.
+-->
+
+# Literature review
+
+The unusual changes in the mouth can present warning signs that warrant healthier choices. Oral potentially malignant disorders (OPMD) describe those groups of changes in the tissues or patches of the mouth which are not the same for everyone due to their specific look and behaviour. The challenge lies in figuring out which changes might develop into more serious ones, such as cancer, while other changes stay harmless. In this study, specialists (i.e., oral and maxillofacial pathologists) examine patients with OPMD during their check-ups.
+
+The transformation of OPMD into cancer does not occur in every instance. As a result, features of the altered cell and tissue structure can be evaluated and this can provide more understanding into the progression process. In this study, biopsy was considered as the diagnostic procedure, identifying patients with severe dysplasia, squamous cell carcinoma, and verrucous carcinoma as progressors. Depending on the patients' population and local habits, the risk of progression is not always deterministic [1], however, there is a consensus that non-homogeneous over homogeneous lesions display a higher malignancy. Non-homogeneous lesions can occur in two clinical variants: verrucous leukoplakia, describable by a wart-like rough surface, and speckled leukoplakia, marked by a patchy pattern of red coloration. Among OPMDs, leukoplakia is one of the most commonly type,  forming as a white patch in the oral cavity. Leukoplakia can be either dysplastic or non-dysplastic, depending on whether the cells within the white patches grow abnormally.  Notably, the higher the redness content in the leukoplakia the more risky is the progression for OPMD.
+
+
+Different studies widely adopt a descriptive framework to analyze clinical effects such as lesion location, gender, smoking history, and alcohol use in OPMD patients. Varying progression patterns are identified under certain influences. The location where the OPMD appears can determine how serious the lesion will progress over time. It is important to recognize that while changes might still occur, some areas of the mouth are less likely to develop cancer. Areas which are less exposed, less sensitive and have less contact with substances like food, drinks such as inner cheeks or gums face fewer risks; hence they are referred to as low-risk sites. The other sites with high risk of developing serious issues are called high risk sites, and these include tongue border, floor of the mouth, and palate [2]. Hence, our study considers OPMD location as a variable. In an overview, [3] narrates that about 70% of leukoplakia can be found in the inner cheeks, edge of the lips, and the gums. Similarly, in an updated classification, [4] explains that researchers in 1978 observed leukoplakia in the floor of the mouth in patients who later developed squamous cell carcinoma. Hence, they identified this area as a risk site. The biological relevance of site-specific progression behaviors is supported by our data, which presents challenges of small and unbalanced sample sizes. The statistical methods applied account for structural dependencies by permuting progression outcomes in risk site groups to construct confidence intervals for difference in proportion.
+
+Nevertheless, considering a form of behavioral and hormonal factors that can improve understanding of the risk in lesion sites, many studies have highlighted that OPMD is generally less common in women. Although the root of this is unclear, such a sex disparity could be broadly examined under exhaustive global genomic studies. However, a study reviewed in [1] shows that women in more countries consistently have a higher risk of OPMD progressing to OSCC compared to men. This could be due to substances or habits specific to women that may significantly influence cancer progression in certain populations. For example, smoking habits vary across environments, and certain practices, such as smoking with the lit end inside the mouth, can lead to significant tissue damage. This habit often causes the surface tissues to thicken while severely affecting the deeper layers, with spots often appearing at high-risk site. Our data offer a unique perspective on OPMD patterns between men and women. Men tend to have a growing and shrinking lesions at different points, while women, seem to have a more stable pattern with fewer ups and downs. Hence, our dataset suggests that stability in lesion size does not necessarily indicate lower risk of progression.
+
+Moreover, oral tissues undergo chemical alterations when smoking and alcohol histories intersect with behavioral and hormonal factors. Such intersection often intensify carcinogenic effects. A study by [4] highlights that individuals who have never smoked may experience more aggressive forms of OPMD compared to those who have smoked, particularly with conditions such as leukoplakia. On the contrary, our study suggests that people who have ever smoked are more likely to develop cancer than those who never did, although not specific to an OPMD type. Furthermore, alcohol consumption as a habitual behavior can influence the progression of OPMD to cancer. Both the type of alcoholic beverage and the frequency of consumption affect cancer risk. According to [1], the risk significantly increases when alcohol is combined with the use of tobacco products. In some literature, the association of alcohol consumption with OPMDs is tagged unclear. However, [5] identifies that damage in the mouth tissues and changes in its chemistry might result from an alcohol history, including moderate drinking that continues for many years.
+
+Additionally, by assumption an OPMD that has existed for a longer time might grow larger within the mouth space. Lesion area is one of a few clinical prognostic factors that have a significant effect on the progression of OPMD to cancer. In a study by [6] a lesion of size $>200mm^{2}$ demonstrates a stronger risk for malignancy transformation. During long-term follow-up, lesion size may fluctuate between growth and reduction. The variability in these changes can follow regular or irregular patterns, and our datasets are analyzed using longitudinal methods. The more the tissue is involved in the worsening, the quicker the OPMD progresses to cancer in a follow-up study. Therefore, building on the aforementioned, several studies have utilized statistical analysis to quantify the progression of OPMD and assess factors influencing malignant transformation considering a time-dependent variable. Our study will further explore lesion area trajectories to capture the long-term risks in a long follow-up period.
+
+
+
+# Missingness of lesion area measurement and biopsy
+
+<!--
+## CREATING MISSING STATUS FOR:
+LESION AREA
+BIOPSY DIAGNOSIS
+##
+-->
+
+```{r}
+# Unique Timepoints
+uniq_tmp <- prj_data_new_al %>% 
+  dplyr::select(Time_point) %>%
+  distinct() %>%
+  pull(Time_point)
+
+# Filtering all unique Timepoints
+dCancerL <- prj_data_new_al %>%
+  filter(Time_point %in% uniq_tmp) %>%
+  dplyr::select(StudyID, Time_point, 
+                Type, Lesion_area) %>%
+  mutate(missing = ifelse(is.na(Lesion_area), 
+                          "missing", "Non_missing"))
+```
+
+```{r}
+# Unique Timepoints
+uniq_tmp <- prj_data_new_al %>% 
+  dplyr::select(Time_point) %>%
+  distinct() %>%
+  pull(Time_point)
+
+# Filtering all unique Timepoints for diagnosis
+dCancerD <- prj_data_new_al %>%
+  filter(Time_point %in% uniq_tmp) %>%
+  dplyr::select(StudyID, Time_point, 
+                Type, diagnosis_retest) %>%
+  mutate(missing = ifelse(is.na(diagnosis_retest), 
+                          "missing", "Non_missing"))
+```
+
+```{r}
+dCancerL$Type <- as.factor(dCancerL$Type)
+dCancerL$missing <- as.factor(dCancerL$missing)
+```
+
+<!--
+UNDER PROGRESSOR GROUP
+-->
+
+```{r, fig.width=18, fig.height=8}
+#| warning: false
+#| label: fig-line-plot1B
+#| fig-cap: >-
+#|  Missing data patterns in lesion areas
+#|  and bxdiagnosis over time for 
+#|  progressors. 
+
+  event_prog <- prj_data_new_al %>%
+  filter(Type == "Progressors") %>%
+  dplyr::select(StudyID) %>% 
+  distinct(StudyID)
+
+
+# For Progressors
+prog1 <- dCancerL %>% 
+  filter(Type == "Progressors")
+
+prog2 <- dCancerD %>% 
+  filter(Type == "Progressors")
+
+# Create an offset for StudyID
+prog1 <- prog1 %>%
+  mutate(StudyID_offset =
+  as.numeric(as.factor(StudyID)) * 1.5)
+
+prog2 <- prog2 %>%
+  mutate(StudyID_offset = 
+  as.numeric(as.factor(StudyID)) * 1.5)
+
+# Merge progression time data with progressors data
+prog1 <- prog1 %>%
+  left_join(event_prog, by = "StudyID")
+
+prog2 <- prog2 %>%
+  left_join(event_prog, by = "StudyID")
+
+# Merge the two datasets
+combined_prog <- merge(prog1, 
+  prog2, by = c("StudyID", 
+  "Time_point", "StudyID_offset"), 
+  suffixes = c("_Lesion", "_Bx"))
+
+# Define the combined missing status
+combined_prog <- combined_prog %>%
+  mutate(`Missing status` = case_when(
+    missing_Lesion == "Non_missing" &
+    missing_Bx == "missing" ~ "Diagnosis missing",
+    missing_Lesion == "missing" & 
+    missing_Bx == "Non_missing" ~ "Lesion area missing",
+    missing_Lesion == "Non_missing" &
+    missing_Bx == "Non_missing" ~ "Both present",
+    missing_Lesion == "missing" 
+    & missing_Bx == "missing" ~ "Both missing"
+  ))
+
+plot_combined1 <- ggplot(combined_prog, aes(x = 
+  Time_point, y = StudyID_offset)) +
+  geom_point(aes(color =
+  `Missing status`, 
+  shape = `Missing status`), 
+  size = 2, alpha = 6) +
+  scale_y_continuous(breaks = 
+  unique(combined_prog$StudyID_offset),
+  labels = unique(combined_prog$StudyID)) +
+  scale_x_continuous(breaks = seq(0, 180, by = 12)) +  
+  labs(x = "time point (months)", y = "StudyID") +
+  ggtitle('Progressors') +
+  theme_bw() + 
+  theme(axis.text.y = element_text(size = 10),  
+        axis.text.x = element_text(size = 10),
+        axis.title.x = element_text(size = 10), 
+        axis.title.y = element_text(size = 10),
+        plot.margin = ggplot2::margin(t = 12, r = 10, 
+        b = 70, l = 10, unit = "pt"),
+        panel.grid.minor.y = element_blank())
+        
+
+a <- plot_combined1 
+```
+
+
+
+
+<!--
+UNDER NON PROGRESSOR GROUP
+-->
+
+```{r}
+#| label: fig-line-plot2
+#| fig-cap: >-
+#|  Missing data patterns in lesion areas 
+#|  and bxdiagnosis over time for 
+#|  non-progressors. 
+
+event_nprog <- prj_data_new_al %>%
+  filter(Type == "Non-Progressors") %>%
+  dplyr::select(StudyID) %>% 
+  distinct(StudyID)
+
+# For Non Progressors
+prog1 <- dCancerL %>% 
+  filter(Type == "Non-Progressors")
+
+prog2 <- dCancerD %>% 
+  filter(Type == "Non-Progressors")
+
+# Create an offset for StudyID
+progNP1 <- prog1 %>%
+  mutate(StudyID_offset = 
+as.numeric(as.factor(StudyID)) * 1.5)
+
+progNP2 <- prog2 %>%
+  mutate(StudyID_offset = 
+as.numeric(as.factor(StudyID)) * 1.5)
+
+# Merge progression time data with progressors data
+progNP1 <- progNP1 %>%
+  left_join(event_nprog, by = "StudyID")
+
+progNP2 <- progNP2 %>%
+  left_join(event_nprog, by = "StudyID")
+
+# Merge the two datasets
+combined_nprog <- merge(progNP1, progNP2, by = c("StudyID", 
+  "Time_point", "StudyID_offset"),
+suffixes = c("_Lesion", "_Bx"))
+
+# Define the combined missing status
+combined_nprog <- combined_nprog %>%
+  mutate(`Missing status` = case_when(
+    missing_Lesion == "Non_missing" & 
+    missing_Bx == "missing" ~ "Diagnosis missing",
+    missing_Lesion == "missing" & 
+    missing_Bx == "Non_missing" ~ "Lesion area missing",
+    missing_Lesion == "Non_missing" & 
+    missing_Bx == "Non_missing" ~ "Both present",
+    missing_Lesion == "missing" & 
+    missing_Bx == "missing" ~ "Both missing"
+  ))
+
+```
+
+
+
+```{r, fig.width=18, fig.height=8}
+plot_combined2 <- ggplot(combined_nprog, 
+aes(x = Time_point, 
+  y = StudyID_offset)) +
+  geom_point(aes(colour = `Missing status`, 
+    shape = `Missing status`), size = 2, alpha = 6) +
+  scale_y_continuous(breaks = 
+unique(combined_nprog$StudyID_offset), 
+  labels = unique(combined_nprog$StudyID)) +
+  scale_x_continuous(breaks = seq(0, 160, by = 12)) +  
+  labs(x = "time point (months)", y = "StudyID") +
+  ggtitle('Non Progressors') +
+  theme_bw() +
+  theme(axis.text.y = element_text(size = 10),  
+        axis.text.x = element_text(size = 10),
+        axis.title.x = element_text(size = 10), 
+        axis.title.y = element_text(size = 10),
+        plot.margin = ggplot2::margin(t = 12, r = 10, 
+        b = 70, l = 10),
+        panel.grid.minor.y = element_blank(),
+        legend.position = "right")
+
+b <- plot_combined2 
+
+```
+
+
+```{r}
+# Overall average time follow-up
+
+OVRmean_prog_time <- prj_data_new_al %>%
+  group_by(StudyID) %>%
+  summarise(LastTimePoint = max(Time_point, na.rm = TRUE)) %>%
+  summarise(OVRmean_prog_time = mean(LastTimePoint))
+
+OVRmean_prog_time <- round(OVRmean_prog_time, 1)
+
+
+# Progressors average time follow-up
+mean_prog_time <- combined_prog %>%
+  group_by(StudyID) %>%
+  summarise(LastTimePoint = max(Time_point, na.rm = TRUE)) %>%
+  summarise(mean_prog_time = mean(LastTimePoint))
+
+
+mean_prog_time <- round(mean_prog_time, 1)
+
+# Non-Progressor average time follow-up
+mean_nprog_time <- combined_nprog %>%
+  group_by(StudyID) %>%
+  summarise(LastTimePoint = max(Time_point, na.rm = TRUE)) %>%
+  summarise(mean_prog_time = mean(LastTimePoint))
+
+
+mean_nprog_time <- round(mean_nprog_time, 1)
+```
+
+The lesion's surface area describes the extent of the affected tissue on the oral mucosa's surface. Measurements can be taken with a sterile flexible surgical ruler, recorded on a grid, and gauged in square millimetres [7]. The lesion area might have the same progression patterns between the non-progressors and progressors groups at the baseline but after a while grow larger, shrink or even remain the same. Additionally, understanding the missingness during the check-ups (lesion area and biopsy) due to absence or lack of measurements is crucial. 
+
+However, the data alignment procedure was applied to two patients to ensure the evaluation started from a comparable baseline across all patients. For the first patient, the recorded time points were 0, 2, 12, 19 months, and so on, while for the second patient, the recorded time points were 0, 3, 10, 16 months, and so forth. These time points did not naturally align with those of other patients in the study. Therefore, for the first patient, the time points were shifted backwards by 12 months, such that a timepoint of 12 became 0, and 19 became 7. Similarly, for the second patient, the time points were shifted backwards by 3 months so that a time point of 3 months became 0, and a time point of 10 became 7. The follow-up study extended over 178 months, and the lesion area is uniquely specific to each visit by the patient.
+
+<!--
+THE TWO PLOTS FOR PROG $ NON-PROG TOGETHER
+-->
+
+```{r, fig.width=18, fig.height=8}
+#| warning: false
+#| label: fig-line-plot2A
+#| fig-cap: >-
+#|  Missing data patterns in lesion area
+#|  measurements and biopsies across time 
+#|  for both 26 non-progressors and 13 progressors
+#|  with each visit corresponds to exactly one
+#|  symbol.
+
+
+pm1 <- a + lims(shape = 
+            c("Diagnosis missing", 
+            "Lesion area missing", 
+            "Both present", 
+            "Both missing"), 
+colour = c("Diagnosis missing", 
+          "Lesion area missing",
+          "Both present", 
+          "Both missing")) + 
+            theme(legend.position="none")
+  
+pm2 <- b + lims(shape = 
+          c("Diagnosis missing", 
+            "Lesion area missing", 
+            "Both present", 
+            "Both missing"), 
+colour = c("Diagnosis missing",
+          "Lesion area missing", 
+          "Both present", 
+          "Both missing")) + 
+          theme(legend.background = 
+          element_rect(
+    fill = "lemonchiffon", 
+    colour = "grey50", 
+    linewidth = 1
+  )
+)
+pm2 + pm1
+```
+
+In this study, each category of OPMD biopsy with low grades, such as hyperkeratosis, mild dysplasia, and moderate dysplasia, reflects different risk levels, requiring frequent monitoring and confirming the category in a follow-up through re-biopsy. There are cases in the study when a re-biopsy was considered to check whether an OPMD has progressed. In @fig-line-plot2A, the red circle at a time point represents when there is neither a single biopsy nor a re-biopsy, but it's independent of lesion area measurement. The green triangle implies the lesion area measurement is missing at the time-point, although biopsy/re-biopsy may hold or not. The blue square denotes complete data (both biopsy/re-biopsy and lesion area) at the time point, and the purple plus sign symbolizes neither the biopsy/re-biopsy nor the lesion area measurement is available at a specific time.
+
+However, defining each individual's starting point, or time point "0," is fundamental to data exploration and analysis. In this study, time point "0" depicts when a patient was flagged for inclusion based on biopsy, lesion area measurement, or both (see @fig-line-plot2A). There were no simultaneous misses of biopsy diagnosis (biopsy retest) and lesion area measurement throughout the study except in one of the non-progressors, who recorded this within the first year of follow-up. That ensures reliability in comparing the two progression outcome groups and enables effective tracking of changes over time.
+
+<!--
+##
+CODE THAT CALCULATE THE % OF MISSING DATA
+AT DIFFERENT INTERVALS
+##
+-->
+
+```{r}
+#| include: false
+
+# Filter the data to include Time_point of interest.
+combined_prog_36 <- combined_prog %>%
+  # Vary this to include any time of interest
+  filter(Time_point >= 96 & Time_point <= 178) 
+
+combined_nprog_36 <- combined_nprog %>%
+  # Vary this to include any time of interest
+  filter(Time_point >= 96 & Time_point <= 178) 
+```
+
+```{r}
+#| include: false
+
+# Calculate the proportion of "Both present" for Progressors
+PrgBothPresent <- combined_prog_36 %>%
+  dplyr::summarize(total_cases = n(),
+            both_present_count = 
+  sum(`Missing status` == "Lesion area missing")) %>% 
+  # Change to any missing status
+  mutate(prop_both_present = 
+           round((both_present_count / total_cases), 3))
+
+# Calculate the proportion of "Both present" for Non-Progressors
+NprgBothPresent <- combined_nprog_36 %>%
+  dplyr::summarize(total_cases = n(),
+            both_present_count = 
+  sum(`Missing status` == "Lesion area missing")) %>% 
+  # Change to any missing status
+  mutate(prop_both_present = 
+           round((both_present_count / total_cases), 4))
+```
+
+<!--
+##
+TABLE FOR THE % RESULTS OF THE MISSING
+##
+-->
+
+```{r}
+#| include: false
+
+# Construct table to show the three columns
+result_table <- data.frame(
+  Group = c("Progressors", "Non-Progressors"),
+  TotalCases = c(PrgBothPresent$total_cases, 
+                NprgBothPresent$total_cases),
+  BothPresentCount = c(PrgBothPresent$both_present_count, 
+                       NprgBothPresent$both_present_count),
+  PropBothPresent = c(PrgBothPresent$prop_both_present, 
+                      NprgBothPresent$prop_both_present)
+)
+
+# Create a table using kable
+kable(result_table, 
+  col.names = c("Group",
+                "Total Cases", 
+                "Both Present Count", 
+                "Proportion Both Present"))
+```
+
+<!--
+##
+UNIQUE TIME POINT INTERVAL - PROGRESSOR
+##
+-->
+
+```{r}
+#| include: false
+
+# Calculate the proportion of "Both present" 
+prog_tmp_prop <- combined_prog %>%
+  group_by(Time_point) %>%
+  dplyr::summarize(
+    total_cases = n(),
+    both_present_count = 
+  sum(`Missing status` == "Both present")) %>%
+  mutate(prop_both_present =
+           both_present_count / total_cases) %>%
+  ungroup()
+```
+
+<!--
+##
+UNIQUE TIME NOT INTERVAL - NON PROGRESSOR
+##
+-->
+
+```{r}
+#| include: false
+
+# Calculate the proportion of "Both present".
+nprog_tmp_prop <- combined_nprog %>%
+  group_by(Time_point) %>%
+  dplyr::summarize(
+    total_cases = n(),
+    both_present_count = 
+sum(`Missing status` == "Both present") # Can vary this to any missing status
+  ) %>%
+  mutate(prop_both_present = both_present_count / total_cases) %>%
+  ungroup()
+```
+
+A study by [8] revealed that the progression of OPMD to cancer takes place between 20 and 94 months after the first visit. Meanwhile, our study tracks OPMD patients for a mean follow-up period of `r OVRmean_prog_time` months. It would be reasonable to study and compare the pattern of the missingness of the lesion area below such mean follow-up period and above the mean follow-up period in interval settings.
+
+At the first visit, (7 out of 13) 53.8% of visits by progressors and (15 out of 26) 57.7% by non-progressors had only missing lesion areas. In this instance, about half of the information related to the lesion area measurements is missing. Within the initial 24 months of follow-up, (12 out of 61) 19.7% of visits by progressors and (33 out of 131) 25.2% by non-progressors were missing lesion areas. At the same time interval, 18.0% of visits by (progressors) vs 8.4% by (non-progressors) had a missing biopsy diagnosis. 
+
+Successively, within 24-48 months, the proportion of visit with missing lesion areas is marginally lower among progressors (6.8%) compared to non-progressors (16.5%). Within 48-72 months, the missingness is 8.8% (progressors) but 27.4% (non-progressors). In a similar trend, 15.4% (progressors) and 36.1% (non-progressors) visits were missing within 72-96 months. 
+
+Similarly, above the mean follow-up time in our study, lesion area measurements were missing for 29.4% of progressors and 42.1% of non-progressors. The missing data occurred during the 96–132 month period.
+
+By inference, in the first visit, about half the progressors and non-progressors had missing lesion values. Still, these proportions decline afterwards, with significance in how the progressors consistently record a lower proportion than non-progressors in lesion area measurements during visits in the follow-up time. Consequently, this pattern suggests that the likelihood of missing a lesion area measurement in a visit might not depend on the actual (unobserved) lesion area value but on the visit time point and progression outcome group, i.e. progressors and non-progressors.
+
+This pattern in the missingness has established the missingness in the lesion areas to be at random, i.e. MAR. Consequently, it is fair to use the longitudinal method for the analysis of lesion area trajectories to ignore the missing values. 
+
+
+
+
+<!--
+Please note that I am using variable "Time_point" instead of Timepoints in prj_data_new_al 
+-->
+<!--
+##
+LESION AREA MISSING OR NON MISSING
+##
+-->
+
+```{r, fig.width=18, fig.height=8}
+#| include: False
+
+dCancerL <- prj_data_new_al %>%
+  dplyr::select(StudyID, 
+                Time_point, Type,
+                Lesion_area) %>%
+  mutate(missing = 
+           ifelse(is.na(Lesion_area),
+                  "missing", "present"))
+
+dCancerL$missing <- as.factor(dCancerL$missing)
+
+# Filter only for Lesion area data
+combined_data <- dCancerL %>%
+  filter(missing %in% c("missing", "present"))
+
+
+combined_data <- combined_data %>%
+  mutate(StudyID_offset =
+           as.numeric(as.factor(StudyID)) * 1.5)
+
+
+plot_combined_lesion <- ggplot(combined_data, aes(x = Time_point, 
+                                                  y = StudyID_offset)) +
+  geom_point(aes(colour = missing), size = 2) +
+  scale_colour_manual(values = c("missing" = "grey", "present" = "black")) +
+  scale_y_continuous(breaks = unique(combined_data$StudyID_offset), 
+                     labels = unique(combined_data$StudyID)) +
+  scale_x_continuous(breaks = seq(0, 180, by = 5)) +  
+  labs(x = "time point (months)", y = "StudyID") +
+  theme_bw() + 
+  theme(axis.text.y = element_text(size = 12),  
+        axis.text.x = element_text(size = 10),
+        axis.title.x = element_text(size = 16), 
+        axis.title.y = element_text(size = 16),
+        plot.margin = ggplot2::margin(t = 10, r = 10, b = 70, l = 10),
+        panel.grid.minor.y = element_blank())
+
+plot_combined_lesion
+```
+
+<!--
+##
+FORM A PLOT THAT SET INTERVALS
+##
+-->
+
+```{r, fig.width=25, fig.height=12}
+#| include: False
+
+base <- plot_combined_lesion + 
+  geom_vline(xintercept = 0:4,
+             linetype = "dashed", 
+                        color = "green4") +
+  geom_vline(xintercept = 5:9,
+             linetype = "dashed", color = "greenyellow") +
+  geom_vline(xintercept = 10:14,
+             linetype = "dashed", color = "green4") +
+  geom_vline(xintercept = 15:19,
+             linetype = "dashed", color = "greenyellow") +
+  geom_vline(xintercept = 20:25,
+             linetype = "dashed", color = "green4") + 
+  geom_vline(xintercept = 26:33,
+             linetype = "dashed", color = "greenyellow") +
+  geom_vline(xintercept = 34:40,
+             linetype = "dashed", color = "green4") +
+  geom_vline(xintercept = 41:46,
+             linetype = "dashed", color = "greenyellow") +
+  geom_vline(xintercept = 47:53,
+             linetype = "dashed", color = "green4") +
+  geom_vline(xintercept = 54:62,
+             linetype = "dashed", color = "greenyellow") +
+  geom_vline(xintercept = 63:72,
+             linetype = "dashed", color = "green4") + 
+  geom_vline(xintercept = 73:80,
+             linetype = "dashed", color = "greenyellow") +
+  geom_vline(xintercept = 81:90,
+             linetype = "dashed", color = "green4") +
+  geom_vline(xintercept = 91:105,
+             linetype = "dashed", color = "greenyellow") +
+  geom_vline(xintercept = 106:178,
+             linetype = "dashed", color = "green4") 
+  # geom_vline(xintercept = 118:130,
+  #            linetype = "dashed", color = "greenyellow") +
+  # geom_vline(xintercept = 131:178, linetype = "dashed", color = "green4")
+
+base + 
+  theme(plot.background = element_rect(fill = "grey80", colour = "NA"))
+```
+
+<!--
+##
+PUT INTERVALS AS INDEPENDENT
+STUDY TIME
+##
+-->
+
+```{r}
+#| include: false
+
+# Select unique StudyID and corresponding type
+study_data <- prj_data_new_al %>%
+  dplyr::select(StudyID, Type) %>%
+  distinct()
+
+# Step 2: Categorize the Time_point into ranges and assign numeric labels
+timepoint_data <- prj_data_new_al %>%
+  mutate(timepoint = case_when(
+    Time_point >= 0 & Time_point <= 4 ~ 1,
+    Time_point >= 5 & Time_point <= 9 ~ 2,
+    Time_point >= 10 & Time_point <= 14 ~ 3,
+    Time_point >= 15 & Time_point <= 19 ~ 4,
+    Time_point >= 20 & Time_point <= 25 ~ 5,
+    Time_point >= 26 & Time_point <= 33 ~ 6,
+    Time_point >= 34 & Time_point <= 40 ~ 7,
+    Time_point >= 41 & Time_point <= 46 ~ 8,
+    Time_point >= 47 & Time_point <= 53 ~ 9,
+    Time_point >= 54 & Time_point <= 62 ~ 10,
+    Time_point >= 63 & Time_point <= 72 ~ 11,
+    Time_point >= 73 & Time_point <= 80 ~ 12,
+    Time_point >= 81 & Time_point <= 90 ~ 13,
+    Time_point >= 91 & Time_point <= 105 ~ 14,
+    Time_point >= 106 & Time_point <= 117 ~ 15,
+    Time_point >= 118 & Time_point <= 130 ~ 16,
+    Time_point >= 131 & Time_point <= 178 ~ 17,
+    TRUE ~ NA_real_
+  ))
+
+```
+
+```{r}
+#| include: false
+
+# Select unique StudyID and corresponding type
+study_data <- prj_data_new_al %>%
+  dplyr::select(StudyID, Type) %>%
+  distinct()
+
+# Step 2: Categorize the Time_point into ranges and assign numeric labels
+timepoint_data <- prj_data_new_al %>%
+  mutate(timepoint = case_when(
+    Time_point >= 0 & Time_point <= 4 ~ 1,
+    Time_point >= 5 & Time_point <= 9 ~ 2,
+    Time_point >= 10 & Time_point <= 14 ~ 3,
+    Time_point >= 15 & Time_point <= 19 ~ 4,
+    Time_point >= 20 & Time_point <= 25 ~ 5,
+    Time_point >= 26 & Time_point <= 33 ~ 6,
+    Time_point >= 34 & Time_point <= 40 ~ 7,
+    Time_point >= 41 & Time_point <= 46 ~ 8,
+    Time_point >= 47 & Time_point <= 53 ~ 9,
+    Time_point >= 54 & Time_point <= 62 ~ 10,
+    Time_point >= 63 & Time_point <= 72 ~ 11,
+    Time_point >= 73 & Time_point <= 80 ~ 12,
+    Time_point >= 81 & Time_point <= 90 ~ 13,
+    Time_point >= 91 & Time_point <= 105 ~ 14,
+    Time_point >= 106 & Time_point <= 178 ~ 15,
+    TRUE ~ NA_real_
+  ))
+
+```
+
+<!--
+TAKE THE AVERAGE WHERE THERE IS MORE THAN 
+ONE LESION AREA OBSERVATION
+FOR A SINGLE PATIENT
+
+MAKE THAT AND FORM A NEW DATA
+-->
+
+```{r}
+#| include: false
+
+# Calculate average Lesion_area for each unique StudyID and timepoint
+average_lesion_area <- timepoint_data %>%
+  group_by(StudyID, Type, 
+           timepoint) %>%
+  summarise(Lesion_area = 
+              mean(Lesion_area, na.rm = TRUE)) %>%
+  ungroup()
+
+# Merge study_data with the average_lesion_area
+final_data <- study_data %>%
+  left_join(average_lesion_area, 
+            by = c("StudyID", "Type"))
+```
+
+<!--
+I will group the time points, conduct Mann Whitney U test on each 
+independent grouped time-point and compare 
+between the progressors and non-progressors.
+-->
+
+```{r}
+final_data$StudyID <- 
+  as.character(final_data$StudyID)
+final_data$Type <- 
+  as.factor(final_data$Type)
+```
+
+```{r}
+#| include: false
+options(dplyr.summarise.inform = FALSE)
+
+timepoint_intervals <- c(
+  "0-4", "5-9", "10-14", "15-19", "20-25", "26-33", "34-40",
+  "41-46", "47-53", "54-62", "63-72", "73-80", "81-90",
+  "91-105", "106-178"
+)
+
+study_time_labels <- 1:length(timepoint_intervals)
+
+final_data <- final_data %>%
+  mutate(
+    `Time span` = timepoint_intervals[timepoint],
+    `Study time` = study_time_labels[timepoint]
+  )
+
+summary_table <- final_data %>%
+  filter(!is.na(Lesion_area)) %>%
+  group_by(`Time span`, `Study time`) %>%
+  dplyr::summarize(
+    `No of Non-Progressors` = sum(Type == "Non-Progressors"),
+    `No of Progressors` = sum(Type == "Progressors")
+  ) %>%
+  mutate(
+    `Time span` = factor(`Time span`, levels = timepoint_intervals)
+  ) %>%
+  arrange(`Study time`)
+```
+
+<!--
+THE NEW DATA HAVE 17 GROUPS i.e.
+study group 1 to study group 14
+-->
+
+```{r}
+#| include: false
+
+# For cleaned data with no missing value
+dataMWT1 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 1) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT2 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 2) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT3 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 3) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT4 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 4) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT5 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 5) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT6 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 6) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT7 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 7) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT8 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 8) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT9 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 9) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT10 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 10) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT11 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 11) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT12 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 12) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT13 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 13) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT14 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 14) %>%
+  dplyr::select(Lesion_area,Type)
+
+dataMWT15 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 15) %>%
+  dplyr::select(Lesion_area,Type)
+# 
+# dataMWT16 <- final_data %>%
+#   filter(!is.na(Lesion_area),
+#          timepoint == 16) %>%
+#   dplyr::select(Lesion_area,Type)
+# 
+# dataMWT17 <- final_data %>%
+#   filter(!is.na(Lesion_area),
+#          timepoint == 17) %>%
+#   dplyr::select(Lesion_area,Type)
+```
+
+<!--
+MAKE 17 PLOTS (BOXPLOTS) FOR THE NEW 
+DATA COMPARING LESION AREA BETWEEN THE TWO
+GROUPS
+-->
+
+```{r}
+#| include: false
+
+plot1 <- ggplot(dataMWT1, 
+        aes(x = factor(Type), 
+        y = Lesion_area)) +
+   geom_boxplot()+
+   theme(legend.position = "none") + 
+    theme_bw() +
+    ggtitle("Lesion area at 0 - 4 month") +
+    theme(plot.title = 
+            element_text(size = 15,
+                         face = "bold")) +
+    labs(x = expression("Type"),
+         y = expression ("Lesion area in"~ mm^2))
+
+plot2 <- ggplot(dataMWT2, 
+                aes(x = factor(Type), 
+                y = Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 5 - 9 month") +
+  theme(plot.title = 
+          element_text(size = 15, face = "bold")) +
+  labs(x = expression("Type"),
+       y = expression ("Lesion area in"~ mm^2))
+
+plot3 <- ggplot(dataMWT2, 
+        aes(x = factor(Type), 
+        y=Lesion_area)) +
+       geom_boxplot()+
+       theme(legend.position = "none") + 
+        theme_bw() +
+        ggtitle("Lesion area at 10 - 14 month") +
+        theme(plot.title = element_text(size = 15,
+              face = "bold")) +
+        labs(x = expression("Type"),
+             y = expression ("Lesion area in"~mm^2))
+
+plot4 <- ggplot(dataMWT4, aes( x= factor(Type), 
+                          y = Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 15 - 19 month") +
+  theme(plot.title = 
+          element_text(size = 15, face = "bold")) +
+  labs(x = expression("Group"),
+       y = 
+         expression ("Lesion area in"~ mm^2))
+
+plot5 <- ggplot(dataMWT5, 
+                aes(x=factor(Type), 
+                y = Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 20 - 25 month") +
+  theme(plot.title = 
+          element_text(size = 15, face = "bold")) +
+  labs(x = expression("Type"),
+       y = expression ("Lesion area in"~mm^2))
+
+plot6 <- ggplot(dataMWT6, 
+                aes(x=factor(Type), 
+                 y=Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 26 - 33 month") +
+  theme(plot.title = 
+          element_text(size = 15, face = "bold")) +
+  labs(x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2))
+
+plot7 <- ggplot(dataMWT7, aes(x=factor(Type), 
+                                  y=Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 34 - 40 month") +
+  theme(plot.title = 
+          element_text(size = 15, face = "bold")) +
+  labs(x = expression("Type"),
+       y = 
+         expression ("Lesion area in"~ mm^2))
+
+plot8 <- ggplot(dataMWT8,
+                aes(x=factor(Type), 
+                y=Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 41 - 46 month") +
+  theme(plot.title = 
+          element_text(size = 15,
+                       face = "bold")) +
+  labs(x = expression("Type"),
+       y = expression ("Lesion area in"~mm^2))
+
+plot9 <- ggplot(dataMWT9, 
+                aes(x=factor(Type), 
+                y=Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 47 - 53 month") +
+  theme(plot.title = 
+          element_text(size = 15, face = "bold")) +
+  labs(x = expression("Type"),
+       y = expression ("Lesion area in"~ mm^2))
+
+plot10 <- ggplot(dataMWT9,
+                 aes(x = factor(Type), 
+                     y = Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 54 - 62 month") +
+  theme(plot.title = 
+          element_text(size = 15,
+                       face = "bold")) +
+  labs(x = expression("Type"),
+       y = expression ("Lesion area in"~mm^2))
+
+plot11 <- ggplot(dataMWT10, 
+                 aes(x=factor(Type), 
+                   y=Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 63 - 72 month") +
+  theme(plot.title = 
+          element_text(size = 15, face = "bold")) +
+  labs(x = expression("Type"),
+       y = expression ("Lesion area in"~ mm^2))
+
+plot12 <- ggplot(dataMWT12, aes(x=factor(Type), 
+                                  y=Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 73 - 80 month") +
+  theme(plot.title = 
+          element_text(size = 15, face = "bold")) +
+  labs(x = expression("Type"),
+       y = expression ("Lesion area in"~ mm^2))
+
+plot13 <- ggplot(dataMWT13,
+                 aes(x=factor(Type), 
+                    y=Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 81 - 90 month") +
+  theme(plot.title = 
+          element_text(size = 15,
+                       face = "bold")) +
+  labs(x = expression("Type"),
+       y = 
+         expression ("Lesion area in"~ mm^2))
+
+plot14 <- ggplot(dataMWT14, aes(x=factor(Type), 
+                                  y=Lesion_area)) +
+     geom_boxplot()+
+     theme(legend.position = "none") + 
+  theme_bw() +
+  ggtitle("Lesion area at 91 - 105 month") +
+  theme(plot.title = 
+          element_text(size = 15, face = "bold")) +
+  labs(x = expression("Type"),
+       y = expression ("Lesion area in"~mm^2))
+
+plot15 <- ggplot(dataMWT15,
+                 aes(x=factor(Type),
+                  y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") +
+  theme_bw() +
+  ggtitle("Lesion area at 106 - 178 month") +
+  theme(plot.title = element_text(size = 15, face = "bold")) +
+  labs(x = expression("Type"),
+       y = expression ("Lesion area in"~ mm^2))
+ 
+# plot16 <- ggplot(dataMWT16, 
+#                  aes(x=factor(Type), 
+#                   y=Lesion_area)) +
+#      geom_boxplot()+
+#      theme(legend.position = "none") + 
+#   theme_bw() +
+#   ggtitle("Lesion area at 118 - 130 month") +
+#   theme(plot.title = element_text(size = 15,
+#                                   face = "bold")) +
+#   labs(x = expression("Type"),
+#        y = 
+#          expression ("Lesion area in"~ mm^2))
+# 
+# plot17 <- ggplot(dataMWT17, aes(x=factor(Type), 
+#                                   y=Lesion_area)) +
+#      geom_boxplot()+
+#      theme(legend.position = "none") + 
+#   theme_bw() +
+#   ggtitle("Lesion area at 131 - 178 month") +
+#   theme(plot.title = element_text(size = 15, face = "bold")) +
+#   labs(x = expression("Type"),
+#        y = expression ("Lesion area in"~ mm^2))
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE study time 1 (dataMWT1) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+dataMWT1 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 1) %>%
+  dplyr::select(Lesion_area,Type)
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u1 <- function(dataMWT1) {
+  # Rank all lesion areas
+  dataMWT1 <- dataMWT1 %>% 
+    mutate(Rank = 
+             rank(Lesion_area, 
+   ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT1 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT1 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+# The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u1(dataMWT1)
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list1 <- list()
+perm_U1 <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT1 %>% 
+    mutate(Type = sample(Type)) # Randomly shuffle the Type labels
+  perm_U1[i] <- mann_whitney_u1(permuted)
+  permuted_list1[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U1[i])
+}
+
+# Combine all permuted data frames into one data frame
+permuted_df1 <- bind_rows(permuted_list1)
+
+data_perm1 <- permuted_df1 %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+
+null_dst <- permuted_df1 %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+pv1 <- null_dst %>% 
+  group_by(U_stat) %>% 
+  dplyr::summarize(count = n()) %>% 
+  filter(U_stat <= m_Wdata) %>% 
+  mutate(`P[W=w]` = count/5000) %>% 
+  summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR study time 1 
+annotating p-value on the plot
+-->
+
+```{r}
+plot1 <- ggplot(dataMWT1, 
+                aes(x=factor(Type), 
+                y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") + 
+  theme_bw() +
+  labs(title = "Study time 1",
+    x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2)) +
+  geom_text(
+    data = pv1,
+    # Specify the aesthetic mapping so that the p-value is
+    # plotted in the top right corner of each plot.
+    aes(x = Inf, y = Inf,
+        label = paste("pvalue =",
+        format.pval(pv1, digits = 3))),
+    inherit.aes = FALSE, 
+    hjust = "inward", vjust = "inward",
+    color = "grey50"
+  )
+
+```
+
+<!--
+CALCULATE MEDIAN & IQR FOR
+THE "study time 1" (dataMWT1) 
+-->
+
+```{r}
+summary_stats1 <- dataMWT1 %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    Median = median(Lesion_area, na.rm = TRUE),
+    IQR = IQR(Lesion_area, na.rm = TRUE)
+  )
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE study time 2 (dataMWT2) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+dataMWT2 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 2) %>%
+  dplyr::select(Lesion_area,Type)
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u2 <- function(dataMWT2) {
+  # Rank all lesion areas
+  dataMWT2 <- dataMWT2 %>% 
+    mutate(Rank = 
+             rank(Lesion_area, 
+   ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT2 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT2 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+# The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u2(dataMWT2)
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list2 <- list()
+perm_U2 <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT2 %>% 
+    mutate(Type = sample(Type)) # Randomly shuffle the Type labels
+  perm_U2[i] <- mann_whitney_u2(permuted)
+  permuted_list2[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U2[i])
+}
+
+# Combine all permuted data frames into one data frame
+permuted_df2 <- bind_rows(permuted_list2)
+
+data_perm2 <- permuted_df2 %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+
+null_dst <- permuted_df2 %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+pv2 <- null_dst %>% 
+  group_by(U_stat) %>% 
+  dplyr::summarize(count = n()) %>% 
+  filter(U_stat <= m_Wdata) %>% 
+  mutate(`P[W=w]` = count/5000) %>% 
+  summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR study time 2 
+annotating p-value on the plot
+-->
+
+```{r}
+plot2 <- ggplot(dataMWT2, 
+                aes(x=factor(Type), 
+                y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") + 
+  theme_bw() +
+  labs(title = "Study time 2",
+    x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2)) +
+  geom_text(
+    data = pv2,
+    # Specify the aesthetic mapping so that the p-value is
+    # plotted in the top right corner of each plot.
+    aes(x = Inf, y = Inf,
+        label = paste("pvalue =",
+        format.pval(pv2, digits = 3))),
+    inherit.aes = FALSE, 
+    hjust = "inward", vjust = "inward",
+    color = "grey50"
+  )
+
+```
+
+<!--
+CALCULATE MEDIAN & IQR FOR
+THE "study time 2" (dataMWT2) 
+-->
+
+```{r}
+summary_stats2 <- dataMWT2 %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    Median = median(Lesion_area, na.rm = TRUE),
+    IQR = IQR(Lesion_area, na.rm = TRUE)
+  )
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE study time 4 (dataMWT4) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+dataMWT4 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 4) %>%
+  dplyr::select(Lesion_area,Type)
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u4 <- function(dataMWT4) {
+  # Rank all lesion areas
+  dataMWT4 <- dataMWT4 %>% 
+    mutate(Rank = 
+             rank(Lesion_area, 
+   ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT4 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT4 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+# The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u4(dataMWT4)
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list4 <- list()
+perm_U4 <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT4 %>% 
+    mutate(Type = sample(Type)) # Randomly shuffle the Type labels
+  perm_U4[i] <- mann_whitney_u4(permuted)
+  permuted_list4[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U4[i])
+}
+
+# Combine all permuted data frames into one data frame
+permuted_df4 <- bind_rows(permuted_list4)
+
+data_perm4 <- permuted_df4 %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+
+null_dst <- permuted_df4 %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+pv4 <- null_dst %>% 
+  group_by(U_stat) %>% 
+  dplyr::summarize(count = n()) %>% 
+  filter(U_stat <= m_Wdata) %>% 
+  mutate(`P[W=w]` = count/5000) %>% 
+  summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR study time 4 
+annotating p-value on the plot
+-->
+
+```{r}
+plot4 <- ggplot(dataMWT4, 
+                aes(x=factor(Type), 
+                y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") + 
+  theme_bw() +
+  labs(title = "Study time 4",
+    x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2)) +
+  geom_text(
+    data = pv4,
+    # Specify the aesthetic mapping so that the p-value is
+    # plotted in the top right corner of each plot.
+    aes(x = Inf, y = Inf,
+        label = paste("pvalue =",
+        format.pval(pv4, digits = 3))),
+    inherit.aes = FALSE, 
+    hjust = "inward", vjust = "inward",
+    color = "grey50"
+  )
+
+```
+
+<!--
+CALCULATE MEDIAN & IQR FOR
+THE "study time 4" (dataMWT4) 
+-->
+
+```{r}
+summary_stats4 <- dataMWT4 %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    Median = median(Lesion_area, na.rm = TRUE),
+    IQR = IQR(Lesion_area, na.rm = TRUE)
+  )
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE "study time 6" (dataMWT6) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+dataMWT6 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 6) %>%
+  dplyr::select(Lesion_area,Type)
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u6 <- function(dataMWT6) {
+  # Rank all lesion areas
+  dataMWT6 <- dataMWT6 %>% 
+    mutate(Rank = rank(Lesion_area, 
+   ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT6 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT6 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+  # The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u6(dataMWT6)
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list6 <- list()
+perm_U6 <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT6 %>% 
+  mutate(Type = sample(Type)) # Randomly shuffle the Type labels
+  perm_U6[i] <- mann_whitney_u6(permuted)
+  permuted_list6[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U6[i])
+}
+
+# Combine all permuted data frames into one data frame
+permuted_df6 <- bind_rows(permuted_list6)
+
+data_perm6 <- permuted_df6 %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+
+null_dst <- permuted_df6 %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+pv6 <- null_dst %>% 
+  group_by(U_stat) %>% 
+  dplyr::summarize(count = n()) %>% 
+  filter(U_stat <= m_Wdata) %>% 
+  mutate(`P[W=w]` = count/5000) %>% 
+  summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR "study time 6" 
+ANNOTATING p-value ON THE PLOT
+-->
+
+```{r}
+plot6 <- ggplot(dataMWT6,
+                aes(x=factor(Type), 
+                  y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") + 
+  theme_bw() +
+  labs(title = "Study time 6",
+    x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2)) +
+  geom_text(
+    data = pv6,
+    aes(x = Inf, y = Inf,  
+        label = 
+        paste("pvalue =", 
+        format.pval(pv6, digits = 3))),
+    inherit.aes = FALSE, 
+    hjust = "inward", vjust = "inward",
+    color = "grey50" 
+  )
+
+```
+
+<!--
+CALCULATE MEDIAN & IQR FOR
+THE "study time 6" (dataMWT6) 
+-->
+
+```{r}
+summary_stats6 <- dataMWT6 %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    Median = median(Lesion_area, na.rm = TRUE),
+    IQR = IQR(Lesion_area, na.rm = TRUE)
+  )
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE study time 8 (dataMWT8) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+dataMWT8 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 8) %>%
+  dplyr::select(Lesion_area,Type)
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u8 <- function(dataMWT8) {
+  # Rank all lesion areas
+  dataMWT8 <- dataMWT8 %>% 
+    mutate(Rank = 
+             rank(Lesion_area, 
+   ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT8 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT8 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+  # The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u8(dataMWT8)
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list8 <- list()
+perm_U8 <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT8 %>% 
+  mutate(Type = sample(Type)) # Randomly shuffle the Type labels
+  perm_U8[i] <- mann_whitney_u8(permuted)
+  permuted_list8[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U8[i])
+}
+
+# Combine all permuted data frames into one data frame
+permuted_df8 <- bind_rows(permuted_list8)
+
+data_perm8 <- permuted_df8 %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+
+null_dst <- permuted_df8 %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+pv8 <- null_dst %>% 
+  group_by(U_stat) %>% 
+  dplyr::summarize(count = n()) %>% 
+  filter(U_stat <= m_Wdata) %>% 
+  mutate(`P[W=w]` = count/5000) %>% 
+  summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR "study time 8" 
+ANNOTATING PVALUE ON THE PLOT
+-->
+
+```{r}
+plot8 <- ggplot(dataMWT8, 
+                aes(x=factor(Type), 
+                y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") + 
+  theme_bw() +
+  labs(title = "Study time 8",
+    x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2)) +
+  geom_text(
+    data = pv8,
+    # Specify the aesthetic mapping so that the p-value is
+    # plotted in the top right corner of each plot.
+    aes(x = Inf, y = Inf,
+        label = paste("pvalue =",
+        format.pval(pv8, digits = 3))),
+    inherit.aes = FALSE, 
+    hjust = "inward", 
+    vjust = "inward",
+    color = "grey50" 
+  )
+
+```
+
+<!--
+CALCULATE MEDIAN & IQR FOR
+THE "study time 8" (dataMWT8) 
+-->
+
+```{r}
+summary_stats8 <- dataMWT8 %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    Median = median(Lesion_area, na.rm = TRUE),
+    IQR = IQR(Lesion_area, na.rm = TRUE)
+  )
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE study time 12 (dataMWT12) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+dataMWT12 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 12) %>%
+  dplyr::select(Lesion_area,Type)
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u12 <- function(dataMWT12) {
+  # Rank all lesion areas
+  dataMWT12 <- dataMWT12 %>% 
+    mutate(Rank = rank(Lesion_area, 
+   ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT12 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT12 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+# The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u12(dataMWT12)
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list12 <- list()
+perm_U12 <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT12 %>% 
+    mutate(Type = sample(Type)) 
+  perm_U12[i] <- mann_whitney_u12(permuted)
+  permuted_list12[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U12[i])
+}
+
+# Combine all permuted data frames into one data frame
+permuted_df12 <- bind_rows(permuted_list12)
+
+data_perm12 <- permuted_df12 %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+
+null_dst <- permuted_df12 %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+pv12 <- null_dst %>% 
+  group_by(U_stat) %>% 
+  dplyr::summarize(count = n()) %>% 
+  filter(U_stat <= m_Wdata) %>% 
+  mutate(`P[W=w]` = count/5000) %>% 
+  summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR "study time 12" 
+ANNOTATING PVALUE ON THE PLOT
+-->
+
+```{r}
+plot12 <- ggplot(dataMWT12, 
+     aes(x=factor(Type), 
+      y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") + 
+  theme_bw() +
+  labs(title = "Study time 12",
+    x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2)) +
+  geom_text(
+    data = pv12,
+    aes(x = Inf, y = Inf, 
+        label =
+    paste("pvalue =",
+        format.pval(pv12, digits = 3))),
+    inherit.aes = FALSE, 
+    hjust = "inward", 
+    vjust = "inward",
+    color = "grey50" 
+  )
+
+```
+
+<!--
+CALCULATE MEDIAN & IQR FOR
+THE "study time 12" (dataMWT12) 
+-->
+
+```{r}
+summary_stats12 <- dataMWT12 %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    Median = median(Lesion_area, na.rm = TRUE),
+    IQR = IQR(Lesion_area, na.rm = TRUE)
+  )
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE study time 13 (dataMWT13) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+dataMWT13 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 13) %>%
+  dplyr::select(Lesion_area,Type)
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u13 <- function(dataMWT13) {
+  # Rank all lesion areas
+  dataMWT13 <- dataMWT13 %>% 
+    mutate(Rank = 
+             rank(Lesion_area, 
+    ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT13 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT13 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+  # The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u13(dataMWT13)
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list13 <- list()
+perm_U13 <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT13 %>% 
+    mutate(Type = sample(Type))
+  perm_U13[i] <- mann_whitney_u13(permuted)
+  permuted_list13[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U13[i])
+}
+
+# Combine all permuted data frames into one data frame
+permuted_df13 <- bind_rows(permuted_list13)
+
+data_perm13 <- permuted_df13 %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+
+null_dst <- permuted_df13 %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+pv13 <- null_dst %>% 
+  group_by(U_stat) %>% 
+  dplyr::summarize(count = n()) %>% 
+  filter(U_stat <= m_Wdata) %>% 
+  mutate(`P[W=w]` = count/5000) %>% 
+  summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR study time 13 
+ANNOTATING PVALUE ON THE PLOT
+-->
+
+```{r}
+plot13 <- ggplot(dataMWT13, aes(x=factor(Type), 
+                                  y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") + 
+  theme_bw() +
+  labs(title = "Study time 13",
+    x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2)) +
+  geom_text(
+    data = pv13,
+    # Specify the aesthetic mapping so that the p-value is
+    # plotted in the top right corner of each plot.
+    aes(x = Inf, y = Inf,  label = paste("pvalue =", format.pval(pv13, digits = 3))),
+    inherit.aes = FALSE, hjust = "inward", vjust = "inward",
+    color = "grey50" 
+  )
+
+```
+
+<!--
+CALCULATE MEDIAN & IQR FOR
+THE "study time 13" (dataMWT13) 
+-->
+
+```{r}
+summary_stats13 <- dataMWT13 %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    Median = median(Lesion_area, na.rm = TRUE),
+    IQR = IQR(Lesion_area, na.rm = TRUE)
+  )
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE study time 13 (dataMWT13) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+dataMWT14 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 14) %>%
+  dplyr::select(Lesion_area,Type)
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u14 <- function(dataMWT14) {
+  # Rank all lesion areas
+  dataMWT14 <- dataMWT14 %>% 
+    mutate(Rank = rank(Lesion_area, 
+    ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT14 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT14 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+  # The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u14(dataMWT14)
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list14 <- list()
+perm_U14 <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT14 %>% 
+    mutate(Type = sample(Type))
+  perm_U14[i] <- mann_whitney_u14(permuted)
+  permuted_list14[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U14[i])
+}
+
+# Combine all permuted data frames into one data frame
+permuted_df14 <- bind_rows(permuted_list14)
+
+data_perm14 <- permuted_df14 %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+
+null_dst <- permuted_df14 %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+pv14 <- null_dst %>% 
+  group_by(U_stat) %>% 
+  dplyr::summarize(count = n()) %>% 
+  filter(U_stat <= m_Wdata) %>% 
+  mutate(`P[W=w]` = count/5000) %>% 
+  summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR study time 14 
+ANNOTATING PVALUE ON THE PLOT
+-->
+
+```{r}
+plot14 <- ggplot(dataMWT14, aes(x=factor(Type), 
+                                  y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") + 
+  theme_bw() +
+  labs(title = "Study time 14",
+    x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2)) +
+  geom_text(
+    data = pv14,
+    aes(x = Inf, y = Inf,  
+        label = paste("pvalue =",
+                      format.pval(pv14, digits = 3))),
+    inherit.aes = FALSE,
+    hjust = "inward", vjust = "inward",
+    color = "grey50" 
+  )
+
+```
+
+<!--
+CALCULATE MEDIAN & IQR FOR
+THE study time 14 (dataMWT14) 
+-->
+
+```{r}
+summary_stats14 <- dataMWT14 %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    Median = median(Lesion_area, na.rm = TRUE),
+    IQR = IQR(Lesion_area, na.rm = TRUE)
+  )
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE study time 15 (dataMWT15) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+dataMWT15 <- final_data %>%
+  filter(!is.na(Lesion_area),
+         timepoint == 15) %>%
+  dplyr::select(Lesion_area,Type)
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u15 <- function(dataMWT15) {
+  # Rank all lesion areas
+  dataMWT15 <- dataMWT15 %>% 
+    mutate(Rank = rank(Lesion_area, 
+     ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT15 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT15 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+  # The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u15(dataMWT15)
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list15 <- list()
+perm_U15 <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT15 %>% 
+    mutate(Type = sample(Type)) 
+  perm_U15[i] <- mann_whitney_u15(permuted)
+  permuted_list15[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U15[i])
+}
+
+# Combine all permuted data frames into one data frame
+permuted_df15 <- bind_rows(permuted_list15)
+
+data_perm15 <- permuted_df15 %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+
+null_dst <- permuted_df15 %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+pv15 <- null_dst %>% 
+  group_by(U_stat) %>% 
+  dplyr::summarize(count = n()) %>% 
+  filter(U_stat <= m_Wdata) %>% 
+  mutate(`P[W=w]` = count/5000) %>% 
+  summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR "study time 15" 
+ANNOTATING PVALUE ON THE PLOT
+-->
+
+```{r}
+plot15 <- ggplot(dataMWT15, 
+         aes(x=factor(Type), 
+            y=Lesion_area)) +
+     geom_boxplot() +
+     theme(legend.position = "none") + 
+  theme_bw() +
+  labs(title = "Study time 15",
+    x = expression("Group"),
+       y = expression ("Lesion area in"~ mm^2)) +
+  geom_text(
+    data = pv15,
+    # Specify the aesthetic mapping so that the p-value is
+    # plotted in the top right corner of each plot.
+    aes(x = Inf, y = Inf,  
+        label = paste("pvalue =",
+              format.pval(pv15, digits = 3))),
+    inherit.aes = FALSE,
+    hjust = "inward", vjust = "inward",
+    color = "grey50" 
+  )
+```
+
+<!--
+CALCULATE MEDIAN & IQR FOR
+THE "study time 15" (dataMWT15) 
+-->
+
+```{r}
+summary_stats15 <- dataMWT15 %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    Median = median(Lesion_area, na.rm = TRUE),
+    IQR = IQR(Lesion_area, na.rm = TRUE)
+  )
+```
+
+<!--
+PERFORM MANN WHITNEY U TEST ON
+THE study time 16 (dataMWT16) &
+OBTAIN THE PVALUE
+-->
+
+```{r}
+#| include: false
+
+# dataMWT16 <- final_data %>%
+#   filter(!is.na(Lesion_area),
+#          timepoint == 16) %>%
+#   dplyr::select(Lesion_area,Type)
+# 
+# # Function to calculate Mann-Whitney U test statistic
+# mann_whitney_u16 <- function(dataMWT16) {
+#   # Rank all lesion areas
+#   dataMWT16 <- dataMWT16 %>% 
+#     mutate(Rank = rank(Lesion_area, 
+#      ties.method = 'average')) # This covers for ties
+#   
+#   # Separate data into two groups
+#   progressors <- dataMWT16 %>%
+#     filter(Type == "Progressors")
+#   non_progressors <- dataMWT16 %>% 
+#     filter(Type == "Non-Progressors")
+#   
+#   # Extract ranks for each group
+#   R1 <- sum(progressors$Rank)
+#   R2 <- sum(non_progressors$Rank)
+#   
+#   # Sample sizes
+#   n1 <- nrow(progressors)
+#   n2 <- nrow(non_progressors)
+#   
+#   # Calculate U1 and U2
+#   U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+#   U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+#   
+#   # The smaller of U1 and U2 is the Mann-Whitney U test statistic
+#   Wdata <- min(U1, U2)
+#   
+#   return(Wdata)
+# }
+# 
+# m_Wdata <- mann_whitney_u16(dataMWT16)
+# 
+# # Set seed for reproducibility
+# set.seed(6789)
+# n_perm <- 5000
+# 
+# # List to store permuted data frames and U statistics
+# permuted_list16 <- list()
+# perm_U16 <- numeric(n_perm)
+# 
+# for (i in 1:n_perm) {
+#   permuted <- dataMWT16 %>% 
+#     mutate(Type = sample(Type)) 
+#   perm_U16[i] <- mann_whitney_u16(permuted)
+#   permuted_list16[[i]] <- permuted %>% 
+#     mutate(Permutation = i, U_stat = perm_U16[i])
+# }
+# 
+# # Combine all permuted data frames into one data frame
+# permuted_df16 <- bind_rows(permuted_list16)
+# 
+# data_perm16 <- permuted_df16 %>% 
+#   dplyr::select(Permutation, Lesion_area, Type)
+# 
+# null_dst <- permuted_df16 %>% 
+#   group_by(Permutation) %>% 
+#   dplyr::summarize(U_stat = first(U_stat)) %>% 
+#   dplyr::select(Permutation, U_stat)
+# 
+# pv16 <- null_dst %>% 
+#   group_by(U_stat) %>% 
+#   dplyr::summarize(count = n()) %>% 
+#   filter(U_stat <= m_Wdata) %>% 
+#   mutate(`P[W=w]` = count/5000) %>% 
+#   summarise(pValue = sum(`P[W=w]`))
+```
+
+<!--
+PLOT FOR study time 15 
+annotating p-value on the plot
+-->
+
+```{r}
+# plot16 <- ggplot(dataMWT16, 
+#            aes(x=factor(Type), 
+#             y=Lesion_area)) +
+#      geom_boxplot() +
+#      theme(legend.position = "none") + 
+#   theme_bw() +
+#   labs(title = "Study time 16",
+#     x = expression("Group"),
+#        y = expression ("Lesion area in"~ mm^2)) +
+#   geom_text(
+#     data = pv16,
+#     # Specify the aesthetic mapping so that the p-value is
+#     # plotted in the top right corner of each plot.
+#     aes(x = Inf, y = Inf,
+#         label = paste("pvalue =",
+#               format.pval(pv16, digits = 3))),
+#     inherit.aes = FALSE,
+#     hjust = "inward", vjust = "inward",
+#     color = "grey50" 
+#   )
+```
+
+<!--
+# CALCULATE MEDIAN & IQR FOR
+# THE study time 17 (dataMWT17) 
+# -->
+
+
+```{r, fig.width=18, fig.height=8}
+#| include: False
+
+ggarrange(plot1, plot2, plot3, 
+          plot4, plot5,
+          plot6, plot7, 
+          plot8, plot9,
+         plot10, plot11, 
+          plot12, plot13, 
+          plot14, plot15 +
+            rremove("x.text"), 
+             ncol = 4, nrow = 4)
+```
+
+<!--
+MANN WHITNEY U TEST FUNCTION FOR 
+OBTAINING THE P-VALUE
+-->
+
+```{r}
+#| include: false
+
+# Function to calculate Mann-Whitney U test statistic
+mann_whitney_u <- function(dataMWT4) {
+  # Rank all lesion areas
+  dataMWT4 <- dataMWT4 %>% 
+    mutate(Rank = rank(Lesion_area, 
+                       ties.method = 'average')) # This covers for ties
+  
+  # Separate data into two groups
+  progressors <- dataMWT4 %>%
+    filter(Type == "Progressors")
+  non_progressors <- dataMWT4 %>% 
+    filter(Type == "Non-Progressors")
+  
+  # Extract ranks for each group
+  R1 <- sum(progressors$Rank)
+  R2 <- sum(non_progressors$Rank)
+  
+  # Sample sizes
+  n1 <- nrow(progressors)
+  n2 <- nrow(non_progressors)
+  
+  # Calculate U1 and U2
+  U1 <- n1 * n2 + (n1 * (n1 + 1)) / 2 - R1
+  U2 <- n1 * n2 + (n2 * (n2 + 1)) / 2 - R2
+  
+  # The smaller of U1 and U2 is the Mann-Whitney U test statistic
+  Wdata <- min(U1, U2)
+  
+  return(Wdata)
+}
+
+m_Wdata <- mann_whitney_u(dataMWT4)
+```
+
+<!--
+CALCULATING THE U STATISTICS
+-->
+
+```{r}
+#| include: false
+
+# Set seed for reproducibility
+set.seed(6789)
+n_perm <- 5000
+
+# List to store permuted data frames and U statistics
+permuted_list <- list()
+perm_U <- numeric(n_perm)
+
+for (i in 1:n_perm) {
+  permuted <- dataMWT4 %>% 
+    mutate(Type = sample(Type)) # Randomly shuffle the Type labels
+  perm_U[i] <- mann_whitney_u(permuted)
+  permuted_list[[i]] <- permuted %>% 
+    mutate(Permutation = i, U_stat = perm_U[i])
+}
+```
+
+```{r}
+# Combine all permuted data frames into one data frame
+permuted_df <- bind_rows(permuted_list)
+```
+
+```{r}
+data_perm <- permuted_df %>% 
+  dplyr::select(Permutation, Lesion_area, Type)
+```
+
+<!--
+## Computed Wdata, Mann Whitney at each reshuffling to form a null model.
+-->
+
+```{r}
+null_dst <- permuted_df %>% 
+  group_by(Permutation) %>% 
+  dplyr::summarize(U_stat = first(U_stat)) %>% 
+  dplyr::select(Permutation, U_stat)
+
+```
+
+<!--
+## Distribution of Mann Whitney statistics.
+-->
+
+```{r}
+#| include: false
+# 
+# plot1 <- null_dst %>% 
+#   ggplot(aes(x = U_stat)) +
+#   geom_histogram(binwidth = 1, color='white') +
+#     xlab("Mann Whitney of 5000 reshuffling") 
+
+```
+
+```{r}
+# pv <- null_dst %>% 
+#   group_by(U_stat) %>% 
+#   dplyr::summarize(count = n()) %>% 
+#   filter(U_stat <= m_Wdata) %>% 
+#   mutate(`P[W=w]` = count/5000) %>% 
+#   summarise(pValue = sum(`P[W=w]`))
+```
+
+# Statistical analysis
+
+## Mann Whitney U tests
+
+The surface area of oral lesions, serving as a proxy for lesion size, can be a strong candidate for explaining the disparity between patients who do and do not progress from lesion to cancer in a retrospective cohort study. Therefore, we tested whether there is statistical evidence of agreement between patients' progression outcomes in the lesion area distributions.
+
+A flexible technique is considered when grouping time points. A grouping is considered at each time point interval when at least one patient's lesion area is measured across no more than two successive visits. That enables us to have a group of time points represented by study time. The final grouping of study times based on the time point intervals is $i = [0, 4] \text{ months, } [5, 9] \text{ months, }  \ldots, [131 - 178] \text{ months}$ as in @tbl-outEDA7. In the interval definition, measuring the lesion area no more than two times per individual achieves an interval that is not too broad or too narrow. In cases where a patient records two lesion area measurements within the same interval (e.g., 0-4 months (Study time 1)), the average of those values is estimated to represent the patient's lesion area at such study time. However, the last interval averaged more than two lesion area measurements per patient to have a reasonable sample size in the interval.
+
+```{r}
+#| label: tbl-outEDA7
+#| tbl-cap: Counts of non-progressors and progressors
+#|  grouped by time points and corresponding study time labels 
+
+kable(
+  summary_table,
+  align = "c",
+  col.names = c("Time span", "Study time",
+                "No of Non-Progressors",
+                "No of Progressors"),
+) %>%
+  kable_styling(full_width = FALSE,
+                position = "center",
+                font_size = 12)
+```
+
+Between groups variation isn't apparent across the study times, however, testing hypotheses across the follow-up intervals might uncover a clearer inference. In @fig-line-plotAN1, outliers and skewness in each group distribution are noticeable, with an overall seemingly inconsistent location and spread trend in the two independent groups across the study time.
+
+Apart from the existence of outliers and skewness (see @fig-line-plotAN1), the two distinctly shaped lesion areas of progressors and non-progressor populations across the study time might be viewed as non-comparable for medians [9]; hence, Mann-Whitney U test will be appropriate.
+
+Mann-Whitney U test is used to test the null hypothesis that the samples of non-progressors and progressors stemmed from the same distribution. The Mann-Whitney test statistic $W$ is the smallest of the two:
+
+\begin{equation}
+U_1 = n_P n_{NP} + \frac{n_P (n_P + 1)}{2} - R_1
+\label{eq:U1}
+\end{equation} \begin{equation}
+U_2 = n_P n_{NP} + \frac{n_{NP} (n_{NP} + 1)}{2} - R_2
+\label{eq:U2}
+\end{equation}
+
+where $NP$ denotes the "non-progressor", and $P$ denotes the "progressor" group. $n_{NP}$ and $n_{P}$ are the number of patients in the $NP$ and $P$ groups respectively. We form a combined sample of size ($n_{NP} + n_{P}$) and rank it, giving the smallest observation a rank 1, and the largest one a rank of ($n_{NP} + n_{P}$). $R_1$ and $R_2$ are the sums of rank in the $NP$ and $P$ groups respectively. For this study, the null and two-sided research hypotheses for the nonparametric tests are as follows:
+
+\textbf{Null Hypothesis ($H_{0i}$):} The lesion areas' distribution of non-progressors and progressors are identical in study time $i$.
+
+\textbf{Alternative Hypothesis ($H_{1i}$):} The distribution of lesion areas of non-progressors is not identical to the distribution of lesion areas of progressors in study time $i$.
+
+where $$i = [0, 4] \text{ months, } [5, 9] \text{ months, }  \ldots, [106 - 178] \text{months}.$$
+
+<!--
+PLOT FOR THE SELECTED study time
+-->
+
+```{r, fig.width=20, fig.height=10}
+#| label: fig-line-plotAN1
+#| fig-cap: |
+#|  Boxplots characterizing lesion area distributions across
+#|   early, intermediate, and late study phases, comparing
+#|    progressors and non-progressors. P-values of the two
+#|     sided  Mann-Whitney U test appear in the upper right corner.
+
+plot1 + plot2 + plot4 + plot6 + plot8 + plot12 + plot13 + plot14 + plot15
+```
+
+The irregular visits naturally introduce gaps in the time intervals because individuals missed follow-up visits at specific times for various reasons. For instance, if someone's lesion area shrinks or shows no changes, they may choose to visit less. Similarly, some individuals have to visit more frequently for proper monitoring if there are noticeable changes in the lesion areas.
+
+
+
+\newpage
+
+<!--
+## TABLE FOR median and IQR for the study time.
+-->
+
+```{r}
+#| label: tbl-outEDAL
+#| tbl-cap: The summary table of the boxplots numerical outputs.  
+
+
+# Define the data
+data <- data.frame(
+  Group = c("Median", "Non Progressors",
+            "Progressors", "IQR", "Non Progressors", "Progressors"),
+  `1` = c("", "270", "356", "", "240", "372"),
+  `2` = c("", "294", "360", "", "216.75", "121"),
+  `4` = c("", "198", "312", "", "306.75", "108"),
+  `6` = c("", "192", "540", "", "405", "384"),
+  `8` = c("", "339", "432", "", "363", "540"),
+  `12` = c("", "360", "352", "", "360", "624"),
+  `13` = c("", "346.5", "612", "", "452", "482"),
+  `14` = c("", "270", "567", "", "420", "314.5"),
+  `15` = c("", "175.5", "806.1", "", "202.5", "372.9")
+)
+
+
+kable(
+  data, 
+  align = "c", 
+  col.names = c("Group/Study Time", "1", "2", "4", "6", "8", "12", "13", "14", "15"),
+  escape = FALSE
+) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 10) %>%
+  add_header_above(c(" " = 1, "Study Time" = 9))
+```
+
+In @fig-line-plotAN1, the overlap of the notches in the boxplots indicates that we can guess that the true medians do not differ. The Mann-Whitney U test was applied to compare the distribution of lesion area of Non-Progressors and Progressors. The test indicated that the difference was not statistically significant for each of the nine tests, where p-values range between 0.146 and 0.939, which was not less than 0.05; therefore, there is not sufficient evidence to reject ($H_{0i}$) of any test (see @fig-line-plotAN1). In @tbl-outEDAL, apart from study time 12 where the medians are nearly identical, the non-progressors group medians frequently appear lower than those of the progressors group across most study time. In @fig-line-plotAN1, there are differences in variability, but these are not consistent across the study phases. For instance, in Study 1, where initial condition is established, the progressors have lesion areas that spread farther apart than lesion areas for non-progressors. Still, this variability is more similar between the groups in study time 6, which can serve as a transition point. The variability is greater among non-progressors at study time 14, the later stage of the timeline. Although differences in medians exist between groups, they are not sufficient across most study times to suggest non-identical group distributions in the Mann-Whitney U test.
+
+## Mixed effect model
+
+Mixed effects models are particularly well-suited when repeated measurements are taken per patient, such that those measurements are correlated within patients and there are large variations between patients. In such instances, random effects can be incorporated to capture variations within and between individuals. A model like this enables inference at both the individual and population-average levels. In this study, there is noticeable variability in $\text{lesion areas}$ between patients. This variability reflects differences in baseline `lesion areas` and rates of change over `time points`. Incorporating a random intercept and slope allows the model to account for such differences across individuals.
+
+<!--
+##
+NEW DATA FOR THE MODEL
+##
+-->
+
+```{r}
+lme.data <- prj_data_new_al %>%
+  dplyr::select(StudyID, Time_point,
+                diagnosis_retest, Lesion_area, Type)
+
+lme.data$Type <- 
+  ifelse(lme.data$Type == "Progressors", 1, 0)
+```
+
+<!--
+##
+DATA GROUPED FOR MIXED EFFECT MODELLING
+##
+-->
+
+```{r}
+dat1 <- groupedData(Lesion_area~Time_point|StudyID,
+                    data = as.data.frame(lme.data))
+```
+
+<!--
+##
+INDIVIDUAL RANDOM EFFECT
+##
+-->
+
+```{r, fig.width=18, fig.height=12}
+#| include: false
+#| warning: false
+
+plot_lesion_area <- ggplot(prj_data_new_al,
+                           aes(x = Time_point,
+                               y = Lesion_area)) +
+geom_line() +
+facet_wrap(~StudyID) +
+labs(title = "",
+     y = "Lesion area",
+     x = "time point (months)")
+```
+
+```{r}
+dat1$Type <- factor(dat1$Type)
+```
+
+<!--
+#### Model M1 - patient-specific random intercept-only model
+-->
+
+
+```{r}
+# Fit random intercept-only without time effect
+M1 <- lme(Lesion_area ~ 1,random = ~ 1 | StudyID, 
+           data = dat1, 
+           na.action = na.exclude) 
+```
+
+
+<!--
+#### Model M2 - patient-specific random intercept with time effect model
+-->
+
+```{r}
+# Fit random intercept model with a time effect
+M2 <- lme(Lesion_area ~ Time_point,
+          random = ~ Time_point | StudyID, 
+           data = dat1, 
+           na.action = na.exclude) 
+                                       
+```
+
+
+
+<!--
+#### Model M3 - conditional growth model with interaction between time and group (Type)
+-->
+
+```{r}
+M3 <- lme(Lesion_area ~ Time_point * Type, 
+          random = ~ Time_point | StudyID, 
+                 data = dat1, 
+                 na.action = na.exclude)
+```
+
+
+<!--
+#### Model M4: Changing the functional form of time: Quadratic trend
+-->
+
+```{r}
+M4 <- lme(Lesion_area ~ (Time_point + I(Time_point^2)) * Type, 
+         random = ~ Time_point + I(Time_point^2) | StudyID, 
+         data = dat1, 
+         na.action = na.exclude)
+```
+
+
+Estimating `lesion area` trajectories over time required repeated patient measurements. Due to irregular measurement timing and missing values, between-individual differences will grow, making the LME model appropriate [10]. In the model selection process, considerable models were evaluated and selected. Different candidate models for the random effect structures were compared. These models included `time point` functions for both linear and quadratic trends. While assessing patients `group` specific random `time point` effects was of interest, models were compared using the Akaike Information Criterion (AIC) with the "smaller-is-better" criterion.
+
+In estimating the conditional mean and variance-covariance structure of `lesion area`, inclusion of the patient's `group`, `time point` and an interaction term between the `group` and `time point` are considered in reduced and full components of nested models. Patients do not all begin with the same `lesion area`, thus we can account for differences in the baseline observations which may be due to various unmeasured factors. The statistical model to describe patient-specific baseline `lesion area` variability is given by (Equation M1)
+
+$$y_{ij} = \beta_0 + b_{0i} + \epsilon_{ij} \tag{M1}$$
+
+where $y_{ij}$ is the `lesion area` for patient $i = 1, 2, \ldots, n$ at `time point` $j = 1, 2, \ldots, m_i$, for all patients are independent. $\beta_{0}$ is the average `lesion area` across all patients; $b_{0i}$ is the patient-specific random intercept, such that for patient $i,$ $b_{0i} \sim N(0, \sigma_b^2)$, and $\epsilon_{ij}$ is independent across $i$ and $j$, and $\epsilon_{ij} \sim N(0, \sigma^2)$.
+
+Variability in `lesion areas` might not be sufficiently captured through differences in baseline `lesion area`, hence model in (Equation M2) is used to draw more information about possible variability. It allows for a possible constant, slower or faster rate of `lesion area` trajectories which can be applicable to individual patients.
+
+
+$$y_{ij} = \beta_0 + b_{0i} + (\beta_1 +  b_{1i}).\text{t}_{ij} + \epsilon_{ij} \tag{M2}$$
+
+where $\beta_1$ is the fixed effect of `time point`; $b_{1i}$ is the random slope for a visit `time point` of patient $i$; $b_{1i} \sim N(0, \sigma^2_{b1})$, and $\epsilon_{ij}$ is independent across $i$ and $j$, with $\epsilon_{ij} \sim N(0, \sigma^2)$.
+
+Interestingly, in a progression outcome, being either a progressor or non-progressor can impact how visit `time point` explains the `lesion areas` trajectories. An interaction model is provided in (Equation M3)
+
+$$y_{ij} = \beta_{0i} + \beta_{1i} t_{ij} + R_{ij} \tag{M3}$$ 
+
+$$\beta_{0i} = \gamma_{00} + \gamma_{01} G_i + U_{0i}$$ 
+
+
+$$\beta_{1i} = \gamma_{10} + \gamma_{11} G_i + U_{1i} $$
+
+Where in the within-individual level, $\beta_{0i}$ is the baseline `lesion area` for patient $i$ and $\beta_{1i}$ is the slope for `time point` $t_{ij}$ of patient $i$. For between-individual level, $G_{i}$ is time-invariant indicator for `group` which takes either of two values (progressors or non-progressors); $\gamma_{00}$ is population level intercept for the reference group, $\gamma_{01}$ is the effect of the patient group $G_{i}$ on the baseline `lesion area`;  $\gamma_{10}$ is the population level slope
+for the reference group, $\gamma_{11}$ is the interaction effect between `time point` since baseline and patient `group` $G_{i}$. For $U_{0i}, U_{1i}$ might be independent across $i$, then $U_{0i} \sim N(0, \tau_{0}^{2})$ is a random intercept deviation for patient $i$, $U_{1i} \sim N(0, \tau_{1}^{2})$ random slope deviation for patient $i$. The $U_{0i}$ and $U_{1i}$ might be correlated, and $R_{ij} \sim N(0, \sigma^2)$ for patient $i$ at time point $j$. 
+
+
+
+However, progressors and non progressors might demonstrate a non-linear trajectories in `lesion area` over `time point`, so model in (Equation M4) is introduced to accommodate this possibility. The equation is provided as: 
+
+$$y_{ij} = \beta_{0i} + \beta_{1i} t_{ij} + \beta_{2i}t_{ij}^{2} + R_{ij} \tag{M4}$$
+
+$$\beta_{0i} = \gamma_{00} + \gamma_{01} G_i + U_{0i}$$ 
+
+$$\beta_{1i} = \gamma_{10} + \gamma_{11} G_i + U_{1i}$$
+
+$$\beta_{2i} = \gamma_{20} + \gamma_{21} G_i + U_{2i}$$ 
+
+Where within-patient level $t_{ij}^{2}$ is the quadratic term to model non-linear trends in time. For $U_{0i}, U_{1i}, U_{2i}$ are independent across patient $i$ and are drawn from a multivariate normal distribution with mean zero and unrestricted covariance structure $\Sigma_{U}$. $R_{ij}$ remains independent across both patients and time points.
+
+<!--
+##
+LINEAR MIXED EFFECT MODELS COMPARISON
+##
+-->
+
+```{r}
+#| label: tbl-outMOD
+#| tbl-cap: Mixed effect Models for time-dependent
+#|  analysis of lesion area variability; Comparison of the reduced and full forms of nested models.
+
+data <- data.frame(
+  Model_Comparison = c("M1 vs. M2",
+                       "M2 vs. M3",
+                       "M3 vs. M4"),
+  Smaller_model_AIC = c("5924.80",
+                        "5911.71",
+                        "5911.71"),
+  Larger_model_AIC = c("5986.39",
+                       "5924.80",
+                       "5911.96"),
+  Preferred_model = c("M2", "M3", "M3")
+)
+
+# Create the table
+kable(data, booktabs = TRUE,
+      escape = FALSE,
+      align = c("c", "c", "c", "c"),
+      col.names = c("Model comparison",
+                    "Smaller model AIC",
+                    "Larger model AIC",
+                    "Preferred model")) %>%
+  kable_styling(latex_options = c("hold_position", "striped"))
+```
+
+
+The comparison of models for conditional mean specification and covariance parameter selection is shown in @tbl-outMOD. The first column compares two nested models with AIC values, the second and third columns present a smaller and bigger AIC value, and the last column shows the preferred model based on the AIC value.
+
+In the first comparison, the selection method reveals that of the two models, M1 and M2, Model M2 has a lower AIC (5924.797) compared to Model M1 (5986.385), which suggests a better fit. Based on the study's data structure with repeated measurement of `lesion areas` for each patient, a model  M1 might not be suitable because it assumes a single, fixed trajectory for all individuals without the effect of time points.
+
+Furthermore, a comparison is made between Model M2 and Model M3, which improves upon Model M2 by incorporating an interaction between the time point and patient group. The results indicate that Model M3 achieves a lower AIC (5911.711) than Model M2 (5924.797), meaning that Model M3 is the better fit for this case. 
+
+Similarly, Model M4 aimed to improve on Model M3 by adding more complexity in describing lesion area changes over time is compared against Model M3. However, Model M3 has a slightly lower AIC (5911.711) than Model M4 (5911.957). As a result, Model M3 is still preferred since the additional complexity in Model M4 does not contribute enough to make it a better choice.
+
+
+
+
+# Results
+
+Estimates of the fixed effects associated with the linear mixed effect model M3 are displayed in @tbl-outME. A test of $(H_{0}: \gamma_{00} = 0)$ yields a t-test of 391 degree of freedom $(pvalue = 0.0001)$. Based on the estimates of $\gamma_{00}$ relative to its standard error, there is a significant difference in the baseline lesion area of the reference group. 
+
+The null hypotheses of: "lesion area remains constant over time points for all patients in the study", "on average, both groups have similar lesion areas at baseline" and "rate of lesion area progression is the same for both groups" are respectively expressed as $H_{0}: \beta_{1i} = 0$,   $H_{0}: \gamma_{01}=0$,  $H_{0}: \gamma_{11}=0$. The estimates of $\beta_{1i}$, $\gamma_{01}$ and $\gamma_{11}$ appear to support the null hypotheses since they all have p-value not < 0.05.
+
+
+```{r}
+#| label: tbl-outME
+#| tbl-cap: The result summary of the linear mixed effect model M3. 
+data <- data.frame(
+  Coefficient = c("(Intercept)", 
+                  "Time point", 
+                  "GroupProgressor", 
+                  "Time point: GroupProgressor"),
+  Estimate = c(325.82, 0.56, 132.80, -1.96),
+  `Standard Error` = c(48.15, 0.86, 83.83, 1.47),
+  `p-value` = c(0.0, 0.52, 0.12, 0.18)
+)
+
+# Create the table
+kable(data, booktabs = TRUE, escape = FALSE, 
+      col.names = c("Coefficient", 
+                    "Estimate", "Standard Error",
+                    "p-value")) %>%
+  kable_styling(latex_options = c("hold_position",
+                                  "striped")) %>%
+  column_spec(1, bold = FALSE) %>%
+  column_spec(4, bold = FALSE)
+```
+
+For example, since a substantial variance is noticed in the intercept and random slope (see @tbl-outVarComp) of the time point, it's a pointer that all patients do not follow a nearly identical trajectory. In fact, a positive correlation between random intercept and slope suggests that patients with larger baseline lesion areas tend to have a slightly larger effect on the variation. A considerable size in the residual variance also suggests that between and within-patient variability are adequately established by model structure.
+
+<!--
+##
+MODEL SUMMARY OF M4 
+##
+-->
+
+
+```{r}
+#| label: tbl-outVarComp
+#| tbl-cap: The variance components and correlation estimates for Model M3.
+
+data <- data.frame(
+  Component = c("Random Intercept Variance", "Random Slope (Time Point) Variance", 
+                "Residual Variance", "Intercept-Slope Correlation"),
+  Estimate = c(45748.65, 10.77, 37838.38, 0.222),
+  `Standard Deviation` = c(213.89, 3.28, 194.52, NA)  # Correlation does not have a standard deviation
+)
+
+# Create the table
+kable(data, booktabs = TRUE, escape = FALSE, 
+      col.names = c("Component", "Estimate", "Standard Deviation")) %>%
+  kable_styling(latex_options = c("hold_position", "striped")) %>%
+  column_spec(1, bold = FALSE) %>%
+  column_spec(3, bold = FALSE)
+```
+
+
+
+# Discussion and Conclusion
+
+A series of models featuring different covariance parameters and conditional mean structures were compared, and the most effective model for lesion area trajectories was identified using a conditional growth model with an interaction between time points and patients' groups. Implicitly, the model includes linear trends for time points with group-specific random intercepts and slopes. With the model selection approach, we ended up having a suitable model that estimates mean lesion area in OPMD patients, incorporating both patient-specific (random) and fixed effects.
+
+In this study, we've sought to construct comprehensive models to understand if the time rate at which covariates change with lesion area varies between progressors and non-progressors. The model defines the conditional mean by splitting it into fixed and random components. The group effects are averages, which are described by assuming a progressor or non-progressor group starts with a particular lesion area, and changes in such lesion area over time are faster, slower, or similar for each group.
+
+In the fixed component, we expect that the lesion areas of all patients in the progressor group will follow a specific trend, although it may differ for the non-progressor group. Such structure allows us to describe how the lesion area evolves over time points while considering the potential variation in trajectories between progressors and non-progressors.
+
+Moreover, with the interaction term, the model demonstrates how the lesion areas change over different time points when patient visits for measurement differ depending on the group. For the group-specific trend, the interaction term explains the difference when one group's lesion area varies over time while the other group's measurements are more stable. Leaving out the interaction term in our study would make it appear like time point has the same effect on every progression outcome group, overlooking the possibility of detecting group-level effects.
+
+Importantly, variability among individuals is effectively measured through the covariance structure, which also accounts for parameter dependencies. In this study, such a flexibility proves fundamental as the relationship between patients' initial lesion sizes and the progression rates over time vary greatly. The unrestricted covariance matrix accommodates the random intercept and random slope to demonstrate a flexible relationship with their variances and covariance. Hence, the observed outcomes reflect the joint contribution of baseline lesion area and progression rates.
+
+In conclusion, our analysis suggests that certain patient-specific factors, especially sex, smoking history, alcohol history, presence of other dysplasia lesions, and lesion risk site, do not contrast between progressors and non-progressors. A combination of low sample size, small effect size, and marginal homogeneity between the groups likely cause the insignificant result in the test of difference in proportion. Also, for the intervals of time points, the lesion areas do not significantly vary between progressors and non-progressors.
+
+\newpage
+
+# REFERENCES
+
+[1]   P. M. Speight, S. A. Khurram, and O. Kujan, “Oral potentially malignant disorders: Risk of progression to malignancy,” *Oral Surgery, Oral Medicine, Oral Pathology and Oral Radiology,* Vol. 125, No. 6, pp. 612–627, 2018, doi: 10.1016/j.oooo.2017.12.011
+
+[2]   N. S. Dos Santos , A. Z. Rodrigues, C. A. Ferri, T. B. de Lima, N. K. Laureano, P. V. Rados, *et al.,* “Temporal epidemiological profile of oral potentially malignant disorders in Southern Brazil,” *Brazilian Oral Research,* Vol. 38, p. e132, 2024, doi: 10.1590/1807-3107bor-2024.vol38.0132
+
+[3]   H. Mortazavi, M. Baharvand, and M. Mehdipour, “Oral potentially malignant disorders: An overview of more than 20 entities,” *Journal of Dental Research, Dental Clinics, Dental Prospects,* Vol. 8, No. 1, p. 6, 2014, doi: 10.5681/joddd.2014.002
+
+[4]   S. Warnakulasuriya, O. Kujan, J. M. Aguirre-Urizar, J. V. Bagan, M. Á. González-Moles, A. R. Kerr *et al.,* “Oral potentially malignant disorders: A consensus report from an international seminar on nomenclature and classification, convened by the WHO collaborating centre for oral cancer,” *Oral Diseases,* Vol. 27, No. 8, pp. 1862–1880, 2021. doi: 10.1111/odi.13704
+
+[5]   S. Y. Choi and H. Kahyo, “Effect of cigarette smoking and alcohol consumption in the aetiology of cancer of the oral cavity, pharynx and larynx,” *International Journal of Epidemiology,* Vol. 20, No. 4, pp. 878–885, 1991, doi: 10.1093/ije/20.4.878
+
+[6]   S. Warnakulasuriya and A. Ariyawardana, “Malignant transformation of oral leukoplakia: A systematic review of observational studies,” *Journal of Oral Pathology and Medicine,* Vol. 45, No. 3, pp. 155–166, 2016, doi: 10.1111/jop.12339
+
+[7]   A. M. Hegarty, T. A. Hodgson, J. D. Lewsey, and S. R. Porter, “Fluticasone propionate spray and betamethasone sodium phosphate mouthrinse: A randomized crossover study for the treatment of symptomatic oral lichen planus,” *Journal of the American Academy of Dermatology,* Vol. 47, No. 2, pp. 271–279, 2002, doi: 10.1067/mjd.2002.120922
+
+[8]   E. Brouns, J. Baart, K. Karagozoglu, I. Aartman, E. Bloemena, and I. van der Waal, “Malignant transformation of oral leukoplakia in a well-defined cohort of 144 patients,” *Oral Diseases,* Vol. 20, No. 3, pp. e19–e24, 2014, doi: 10.1111/odi.12095
+
+[9]   R. D. De Veaux, P. F. Velleman, D. E. Bock, A. M. Vukov, and A. C. M. Wong, “Nonparametric Tests” in *Stats: Data and models,* Third Canadian, Toronto: Pearson, 2019, ch. 28, pp. 944–971.
+
+[10]  G. M. Fitzmaurice, N. M. Laird, and J. H. Ware “Linear Mixed Effect Models” in *Applied Longitudinal Analysis, Second Edition,* US: John Wiley & Sons, Inc, 2004, ch. 8, pp. 189-240, doi: 10.1002/9781119513469
+
